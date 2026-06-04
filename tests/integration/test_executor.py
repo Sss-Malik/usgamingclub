@@ -43,11 +43,12 @@ async def test_read_balance_success_posts_succeeded_webhook(seeded):
 async def test_create_account_includes_username_password(seeded):
     route = respx.post(URL).mock(return_value=httpx.Response(200, json={"ok": True}))
     await _run(
-        {"idempotency_key": "k2", "type": "CREATE_ACCOUNT", "user_id": 42, "game_id": 7, "game_account_id": None},
+        {"idempotency_key": "k2", "type": "CREATE_ACCOUNT", "user_id": 42, "game_id": 7,
+         "game_account_id": None, "account_username": "saudmalik42"},
         seeded,
     )
     body = route.calls.last.request.content.decode()
-    assert '"username":"mock_42_7"' in body and '"password":"' in body
+    assert '"username":"saudmalik42"' in body and '"password":"' in body
 
 
 @respx.mock

@@ -23,6 +23,7 @@ class Game(Base):
     api_agent_id: Mapped[str | None] = mapped_column(default=None)
     api_secret_key: Mapped[str | None] = mapped_column(default=None)
     binding_key: Mapped[str | None] = mapped_column(default=None)
+    backend_driver: Mapped[str | None] = mapped_column(default=None)
     deleted_at: Mapped[datetime | None] = mapped_column(default=None)
 
 

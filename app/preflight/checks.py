@@ -16,9 +16,11 @@ async def build_context(
     session: AsyncSession,
     *,
     type: str,
-    user_id: int | None,
     game_id: int,
     game_account_id: int | None,
+    user_id: int | None,
+    idempotency_key: str = "",
+    account_username: str | None = None,
 ) -> BackendContext:
     game = await GamesRepository(session).get(game_id)
     if game is None:
@@ -35,7 +37,13 @@ async def build_context(
         api_agent_id=game.api_agent_id,
         api_secret_key=game.api_secret_key,
         binding_key=game.binding_key,
+        backend_driver=game.backend_driver,
     )
+
+    if (game.backend_driver or "").lower() == "gamevault" and not (
+        game.api_base_url and game.api_agent_id and game.api_secret_key
+    ):
+        raise PreflightError("missing_gamevault_credentials")
 
     account: AccountIdentity | None = None
     if type in ACCOUNT_SCOPED_TYPES:
@@ -52,4 +60,10 @@ async def build_context(
             external_user_id=acct.external_user_id,
         )
 
-    return BackendContext(credentials=credentials, user_id=user_id, account=account)
+    return BackendContext(
+        credentials=credentials,
+        user_id=user_id,
+        account=account,
+        idempotency_key=idempotency_key,
+        account_username=account_username,
+    )

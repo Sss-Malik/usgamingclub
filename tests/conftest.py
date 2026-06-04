@@ -48,5 +48,31 @@ async def seeded(session_factory):
                 external_user_id="EXT-42",
             )
         )
+        s.add(
+            Game(
+                id=9,
+                name="GameVault Demo",
+                active=True,
+                backend_driver="gamevault",
+                api_base_url="https://gv.test",
+                api_agent_id="11",
+                api_secret_key="gvsecret",
+            )
+        )
+        s.add(
+            Game(id=10, name="GameVault NoCreds", active=True, backend_driver="gamevault"),
+        )
+        s.add(
+            GameAccount(
+                id=2001, user_id=43, game_id=9, username="user020301",
+                password="x", external_user_id="88880212",
+            )
+        )
+        s.add(
+            GameAccount(
+                id=2002, user_id=44, game_id=9, username="user_no_ext",
+                password="x", external_user_id=None,
+            )
+        )
         await s.commit()
     return session_factory

@@ -44,6 +44,8 @@ async def execute_operation(
                 user_id=getattr(op, "user_id", None),
                 game_id=op.game_id,
                 game_account_id=getattr(op, "game_account_id", None),
+                idempotency_key=key,
+                account_username=getattr(op, "account_username", None),
             )
     except PreflightError as exc:
         reason = f"preflight_failed: {exc.reason}"

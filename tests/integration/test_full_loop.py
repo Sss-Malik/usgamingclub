@@ -39,7 +39,8 @@ async def test_create_account_round_trip(monkeypatch, seeded):
     route = respx.post(WEBHOOK).mock(return_value=httpx.Response(200, json={"ok": True}))
 
     body = json.dumps(
-        {"idempotency_key": "loop-1", "type": "CREATE_ACCOUNT", "user_id": 42, "game_id": 7, "game_account_id": None},
+        {"idempotency_key": "loop-1", "type": "CREATE_ACCOUNT", "user_id": 42, "game_id": 7,
+         "game_account_id": None, "account_username": "saudmalik42"},
         separators=(",", ":"),
     )
     transport = httpx.ASGITransport(app=app)
@@ -57,5 +58,5 @@ async def test_create_account_round_trip(monkeypatch, seeded):
     sent = json.loads(route.calls.last.request.content.decode())
     assert sent["idempotency_key"] == "loop-1"
     assert sent["status"] == "succeeded"
-    assert sent["result"]["username"] == "mock_42_7"
+    assert sent["result"]["username"] == "saudmalik42"
     get_settings.cache_clear()

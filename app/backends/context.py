@@ -14,6 +14,7 @@ class GameCredentials:
     api_agent_id: str | None
     api_secret_key: str | None
     binding_key: str | None
+    backend_driver: str | None = None
 
 
 @dataclass(frozen=True)
@@ -30,3 +31,5 @@ class BackendContext:
     credentials: GameCredentials
     user_id: int | None
     account: AccountIdentity | None
+    idempotency_key: str = ""
+    account_username: str | None = None
