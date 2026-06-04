@@ -76,13 +76,17 @@ dependencies = [
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
     "sqlalchemy[asyncio]>=2.0.30",
-    "asyncmy>=0.2.9",
     "arq>=0.26",
     "redis>=5.0",
     "structlog>=24.1",
 ]
 
 [project.optional-dependencies]
+# Production runtime MySQL driver. Installed in Docker only; the test suite uses
+# sqlite+aiosqlite and never imports asyncmy (SQLAlchemy loads the driver lazily on connect).
+prod = [
+    "asyncmy>=0.2.9",
+]
 dev = [
     "pytest>=8.2",
     "pytest-asyncio>=0.23",
@@ -2519,7 +2523,7 @@ WORKDIR /app
 
 COPY pyproject.toml README.md ./
 COPY app ./app
-RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir ".[prod]"
 
 # API container overrides this; worker container sets its own command in compose.
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001"]
