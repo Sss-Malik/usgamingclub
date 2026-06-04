@@ -18,11 +18,13 @@ def resolve_backend(
     if key == "mock":
         return MockBackend(fail=settings.mock_force_fail, fail_reason=settings.mock_force_fail_reason)
     if key == "gamevault":
+        if not (credentials.api_base_url and credentials.api_agent_id and credentials.api_secret_key):
+            raise BackendError("missing_gamevault_credentials")
         return GameVaultBackend(
             GameVaultClient(
-                base_url=credentials.api_base_url or "",
-                agent_id=credentials.api_agent_id or "",
-                secret_key=credentials.api_secret_key or "",
+                base_url=credentials.api_base_url,
+                agent_id=credentials.api_agent_id,
+                secret_key=credentials.api_secret_key,
                 http_client=http_client,
             )
         )

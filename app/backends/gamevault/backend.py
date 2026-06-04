@@ -1,7 +1,7 @@
 # app/backends/gamevault/backend.py
 import math
 
-from app.backends.base import BackendError
+from app.backends.base import BackendError, TransientBackendError
 from app.backends.context import BackendContext
 from app.backends.gamevault.client import GameVaultClient
 from app.backends.gamevault.passwords import generate_memorable_password
@@ -38,7 +38,10 @@ class GameVaultBackend:
             data = await self._client.call(
                 "/api/external/getUserID", {"account_name": ctx.account.username}
             )
-            return str(data["user_id"])
+            user_id = data.get("user_id")
+            if not user_id:
+                raise BackendError("user_id_unresolved")
+            return str(user_id)
         raise BackendError("user_id_unresolved")
 
     async def create_account(self, ctx: BackendContext) -> CreateAccountResult:
@@ -48,8 +51,14 @@ class GameVaultBackend:
         data = await self._client.call(
             "/api/external/addUser", {"account": ctx.account_username, "login_pwd": pwd}
         )
+        user_id = data.get("user_id")
+        if not user_id:
+            # code:0 but no user_id: the account may or may not have been created. Treat as
+            # transient (not cached) so a re-run can recover; a same-username retry that already
+            # exists surfaces as a terminal account_exists from GameVault.
+            raise TransientBackendError("gamevault_missing_user_id")
         return CreateAccountResult(
-            username=ctx.account_username, password=pwd, external_user_id=str(data["user_id"])
+            username=ctx.account_username, password=pwd, external_user_id=str(user_id)
         )
 
     async def read_balance(self, ctx: BackendContext) -> ReadBalanceResult:

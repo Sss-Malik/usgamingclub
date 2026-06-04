@@ -67,3 +67,12 @@ async def test_http_5xx_and_timeout_are_transient():
     async with httpx.AsyncClient() as http:
         with pytest.raises(TransientBackendError):
             await _client(http).call("/api/external/agentBalance", {})
+
+
+@respx.mock
+async def test_http_429_and_408_are_transient():
+    for status in (408, 429):
+        respx.post(f"{BASE}/api/external/agentBalance").mock(return_value=httpx.Response(status))
+        async with httpx.AsyncClient() as http:
+            with pytest.raises(TransientBackendError):
+                await _client(http).call("/api/external/agentBalance", {})

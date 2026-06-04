@@ -44,6 +44,8 @@ async def execute_operation(
     cached = await result_cache.get(key)
     if cached is not None:
         log.bind(phase="cache_hit").info("operation_replay_from_cache", status=cached.status)
+        # NOTE: apply_post_effects is intentionally skipped on replay. It is a no-op today; if it
+        # gains real behavior in Phase 3, revisit whether replays must run it.
         await _deliver(http_client, settings, key, cached)
         return
 
@@ -87,7 +89,12 @@ async def execute_operation(
         await _deliver(http_client, settings, key, outcome)
         return
     except ValidationError as exc:
-        await _deliver(http_client, settings, key, CachedOutcome("failed", None, f"invalid_result_payload: {_summarize(exc)}"))
+        # A malformed backend result is terminal (same inputs -> same error); cache it so a worker
+        # re-run does not re-call the backend (money-op safety for recharge/redeem).
+        outcome = CachedOutcome("failed", None, f"invalid_result_payload: {_summarize(exc)}")
+        await result_cache.set(key, outcome, settings.result_cache_ttl_seconds)
+        log.error("operation_invalid_result", reason=outcome.reason)
+        await _deliver(http_client, settings, key, outcome)
         return
     except Exception:  # noqa: BLE001 - any unexpected error is reported, not cached
         log.exception("operation_unexpected_error")

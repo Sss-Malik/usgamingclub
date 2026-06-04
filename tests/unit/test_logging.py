@@ -14,6 +14,13 @@ def test_password_is_a_secret_key():
     assert "password" in SECRET_KEYS
 
 
+def test_gamevault_secret_fields_are_redacted():
+    # GameVault's password field is login_pwd; the per-request auth token must not leak either.
+    assert {"login_pwd", "token"} <= SECRET_KEYS
+    out = redact_processor(None, None, {"login_pwd": "Tiger4827", "token": "abc123"})
+    assert out["login_pwd"] == "***" and out["token"] == "***"
+
+
 def test_redact_is_recursive():
     event = {"event": "x", "creds": {"api_secret_key": "k", "name": "ok"}}
     out = redact_processor(None, None, event)

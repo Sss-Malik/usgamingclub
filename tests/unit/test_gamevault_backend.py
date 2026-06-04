@@ -3,7 +3,7 @@ import httpx
 import pytest
 import respx
 
-from app.backends.base import BackendError
+from app.backends.base import BackendError, TransientBackendError
 from app.backends.context import AccountIdentity, BackendContext, GameCredentials
 from app.backends.gamevault.backend import GameVaultBackend, _to_cents, _to_dollars
 from app.backends.gamevault.client import GameVaultClient
@@ -36,6 +36,17 @@ def test_unit_helpers():
     assert _to_dollars(5500) == "55"
     assert _to_dollars(5510) == "56"   # ceil
     assert _to_dollars(3050) == "31"   # ceil
+
+
+@respx.mock
+async def test_create_account_missing_user_id_is_transient():
+    # code:0 but no user_id -> transient (not cached), so a re-run can recover.
+    respx.post(f"{BASE}/api/external/addUser").mock(
+        return_value=httpx.Response(200, json={"code": 0, "msg": "ok", "data": {}, "count": 0})
+    )
+    async with httpx.AsyncClient() as http:
+        with pytest.raises(TransientBackendError):
+            await _backend(http).create_account(_ctx(account=False, account_username="usr_43"))
 
 
 @respx.mock

@@ -34,7 +34,7 @@ class GameVaultClient:
         except httpx.HTTPError as exc:
             raise TransientBackendError(f"gamevault_transport:{type(exc).__name__}") from exc
 
-        if resp.status_code >= 500:
+        if resp.status_code in (408, 429) or resp.status_code >= 500:
             raise TransientBackendError(f"gamevault_http_{resp.status_code}")
         if resp.status_code >= 300:
             raise BackendError(f"gamevault_http_{resp.status_code}")

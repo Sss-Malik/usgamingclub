@@ -38,3 +38,16 @@ def test_unknown_driver_raises():
     s = _settings()
     with pytest.raises(BackendError):
         resolve_backend("nope", credentials=_creds("nope"), http_client=None, settings=s)
+
+
+def test_gamevault_missing_credentials_raises():
+    s = _settings()
+    creds = GameCredentials(
+        game_id=9, name="g", backend_url=None, login_page_url=None,
+        backend_username=None, backend_password=None,
+        api_base_url=None, api_agent_id=None, api_secret_key=None,
+        binding_key=None, backend_driver="gamevault",
+    )
+    with pytest.raises(BackendError) as ei:
+        resolve_backend("gamevault", credentials=creds, http_client=object(), settings=s)
+    assert ei.value.reason == "missing_gamevault_credentials"
