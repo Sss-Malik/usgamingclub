@@ -6,7 +6,7 @@ from arq.connections import RedisSettings
 from fastapi import FastAPI
 
 from app.api import health, operations
-from app.config import get_settings
+from app.config import get_settings, require_runtime_settings
 from app.logging import configure_logging, get_logger
 
 
@@ -14,6 +14,7 @@ from app.logging import configure_logging, get_logger
 async def lifespan(app: FastAPI):
     configure_logging()
     settings = get_settings()
+    require_runtime_settings(settings)
     app.state.arq = await create_pool(RedisSettings.from_dsn(settings.redis_url))
     get_logger(__name__).info("service_started", env=settings.env)
     try:

@@ -12,7 +12,7 @@ async def verify_signature(request: Request) -> bytes:
         settings.python_signing_secret,
         request.headers.get("X-Timestamp", ""),
         request.headers.get("X-Signature", ""),
-        raw.decode("utf-8", errors="replace"),
+        raw,  # verify over the exact raw bytes (byte-exact per contract §1)
         replay_window=settings.replay_window_seconds,
     )
     if not ok:

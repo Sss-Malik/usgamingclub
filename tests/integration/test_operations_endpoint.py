@@ -62,3 +62,19 @@ async def test_missing_idempotency_key_returns_400(app):
         resp = await c.post("/operations", content=body, headers=headers)
     assert resp.status_code == 400
     assert app.state.arq.jobs == []
+
+
+async def test_enqueue_failure_returns_500(app):
+    class FailingArq:
+        async def enqueue_job(self, func, payload, _job_id=None):
+            raise RuntimeError("redis down")
+
+    app.state.arq = FailingArq()
+    body = json.dumps(
+        {"idempotency_key": "k1", "type": "READ_BALANCE", "user_id": 42, "game_id": 7, "game_account_id": 1001},
+        separators=(",", ":"),
+    )
+    headers = sign("s", body)
+    async with await _client(app) as c:
+        resp = await c.post("/operations", content=body, headers=headers)
+    assert resp.status_code == 500

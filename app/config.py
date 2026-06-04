@@ -53,3 +53,16 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+def require_runtime_settings(settings: Settings) -> None:
+    """Fail fast on misconfiguration at service startup.
+
+    Without the shared secret, every inbound trigger 401s and every outbound webhook
+    is rejected — a silent, confusing failure. Surface it loudly at boot instead.
+    """
+    if not settings.python_signing_secret:
+        raise RuntimeError(
+            "PYTHON_SIGNING_SECRET is not set — inbound triggers and outbound webhooks "
+            "cannot be authenticated. Configure it to match Laravel."
+        )

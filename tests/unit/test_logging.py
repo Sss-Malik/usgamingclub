@@ -14,6 +14,13 @@ def test_password_is_a_secret_key():
     assert "password" in SECRET_KEYS
 
 
+def test_redact_is_recursive():
+    event = {"event": "x", "creds": {"api_secret_key": "k", "name": "ok"}}
+    out = redact_processor(None, None, event)
+    assert out["creds"]["api_secret_key"] == "***"
+    assert out["creds"]["name"] == "ok"
+
+
 def test_configure_logging_runs_and_logger_emits(capsys):
     # Regression: configure_logging() runs on app/worker startup. A bad structlog
     # API name here would crash the service at boot even though the redaction unit

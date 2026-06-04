@@ -26,6 +26,12 @@ async def receive_operation(
         logger.warning("operation_missing_idempotency_key", phase="received")
         return Response(status_code=400)
 
-    await request.app.state.arq.enqueue_job("execute_operation_task", data, _job_id=key)
+    # Fail closed: if we cannot enqueue (e.g. Redis down), do NOT ack 202 — Laravel
+    # dispatches at-most-once, so a fake 202 would silently drop the operation.
+    try:
+        await request.app.state.arq.enqueue_job("execute_operation_task", data, _job_id=key)
+    except Exception:  # noqa: BLE001 - any enqueue failure must surface as a non-202
+        logger.exception("operation_enqueue_failed", idempotency_key=key, phase="enqueued")
+        return Response(status_code=500)
     logger.bind(idempotency_key=key, phase="enqueued").info("operation_enqueued")
     return Response(status_code=202)

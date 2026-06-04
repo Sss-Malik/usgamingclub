@@ -1,6 +1,10 @@
 # tests/unit/test_config.py
 import importlib
+
+import pytest
+
 import app.config as config_module
+from app.config import Settings, require_runtime_settings
 
 
 def _fresh_settings(monkeypatch, **env):
@@ -27,3 +31,10 @@ def test_settings_read_from_env_and_build_urls(monkeypatch):
     assert s.ping_url == "https://laravel.test/webhooks/_ping"
     assert s.db_dsn == "mysql+asyncmy://ro:pw@db:3307/casino"
     assert s.replay_window_seconds == 300
+
+
+def test_require_runtime_settings_rejects_empty_secret():
+    with pytest.raises(RuntimeError):
+        require_runtime_settings(Settings(python_signing_secret=""))
+    # a configured secret passes without raising
+    require_runtime_settings(Settings(python_signing_secret="configured"))

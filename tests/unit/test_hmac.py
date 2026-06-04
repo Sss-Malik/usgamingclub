@@ -36,3 +36,17 @@ def test_verify_rejects_non_numeric_or_missing():
     assert not verify(SECRET, "not-a-number", "sha256=x", BODY, now=1000)
     assert not verify(SECRET, "1000", "", BODY, now=1000)
     assert not verify("", "1000", "sha256=x", BODY, now=1000)
+
+
+def test_verify_rejects_unicode_digit_timestamp():
+    # "³" (superscript 3) passes str.isdigit() but is not int-parseable; must be rejected.
+    assert not verify(SECRET, "³", "sha256=x", BODY, now=1000)
+
+
+def test_sign_and_verify_over_raw_bytes_match_str_path():
+    body_bytes = BODY.encode()
+    headers = sign(SECRET, body_bytes, timestamp=1000)
+    # signature over bytes equals signature over the equivalent str
+    assert headers["X-Signature"] == build_signature(SECRET, "1000", BODY)
+    assert verify(SECRET, headers["X-Timestamp"], headers["X-Signature"], body_bytes, now=1000)
+    assert not verify(SECRET, headers["X-Timestamp"], headers["X-Signature"], body_bytes + b"x", now=1000)

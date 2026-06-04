@@ -16,10 +16,19 @@ SECRET_KEYS = {
 }
 
 
+def _redact_in_place(d: dict) -> None:
+    for key in list(d.keys()):
+        value = d[key]
+        if key.lower() in SECRET_KEYS and value is not None:
+            d[key] = "***"
+        elif isinstance(value, dict):
+            _redact_in_place(value)
+
+
 def redact_processor(_logger, _name, event_dict):
-    for key in list(event_dict.keys()):
-        if key.lower() in SECRET_KEYS and event_dict[key] is not None:
-            event_dict[key] = "***"
+    # Redact recursively: a secret nested in a logged dict (e.g. credentials) must
+    # never leak, not just top-level keys.
+    _redact_in_place(event_dict)
     return event_dict
 
 
