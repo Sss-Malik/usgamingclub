@@ -20,6 +20,13 @@ class BackendError(Exception):
         super().__init__(reason)
 
 
+class TransientBackendError(BackendError):
+    """A backend failure that is safe to retry (timeout, 5xx, transient business code).
+
+    The executor does NOT cache these, so an arq re-run will retry the backend call.
+    """
+
+
 class GameBackend(Protocol):
     async def create_account(self, ctx: BackendContext) -> CreateAccountResult: ...
 
