@@ -245,9 +245,12 @@ configurable failure mode to exercise the `status:"failed"` path.
 
 1. **Trigger received** → verify HMAC over raw body. Bad/expired/missing signature → `401` (the only
    non-202 path). Signature OK → continue.
-2. **Validate** body against the typed `type` union. If signature-valid but schema-invalid →
-   **ack `202`, then immediately webhook `status:"failed"`** (graceful: Laravel records a real
-   failure rather than a `dispatch_failed`). *(See Decision D5 — to confirm in spec review.)*
+2. **Validate** body against the typed `type` union (Decision D5, confirmed — Option A). If
+   signature-valid but schema-invalid → **ack `202`, then immediately webhook `status:"failed"`**
+   (reason `invalid_payload: ...`) so Laravel records a real failure rather than a `dispatch_failed`.
+   *Correlation fallback:* if the body is not valid JSON or carries no usable `idempotency_key`
+   (cannot happen when Laravel is the only caller), we cannot correlate a webhook, so we return a
+   non-`202` and let Laravel mark `dispatch_failed`.
 3. **Dedupe** → enqueue arq job with `job_id = idempotency_key` (duplicate trigger within TTL is a
    no-op by construction). Defensive cross-check against `game_operations`.
 4. **`202`** returned immediately.
@@ -272,7 +275,8 @@ money backend; Phase 1 builds the seam only.
 | Situation | Python behavior |
 |---|---|
 | Bad/expired/missing inbound signature | `401` (matches Laravel's `VerifyHmacSignature` codes) |
-| Signature OK, schema-invalid body | `202`, then webhook `status:"failed"` (reason = validation summary) |
+| Signature OK, schema-invalid body (has `idempotency_key`) | `202`, then webhook `status:"failed"` (reason = `invalid_payload: ...`) |
+| Signature OK, but unparseable / no `idempotency_key` | non-`202` → Laravel marks `dispatch_failed` (cannot correlate) |
 | Duplicate trigger (same `idempotency_key`) | `202`, no duplicate job (arq job_id dedupe) |
 | Missing game creds / account / inconsistency (pre-flight) | webhook `status:"failed"` (structured reason) |
 | Backend call error/timeout | webhook `status:"failed"` (reason) |
@@ -363,12 +367,12 @@ This proves the whole control plane before any real game is wired.
 | D2 | Tech stack | FastAPI + httpx + Pydantic v2 + SQLAlchemy 2.0 async + structlog + pytest |
 | D3 | DB driver | **asyncmy** (manylinux wheels; clean Docker build) |
 | D4 | Health endpoints | Add `/health` + `/ready` (ops hygiene; not contract-required) |
-| D5 | Invalid trigger handling | `401` for bad signature; for signature-valid-but-schema-invalid, ack `202` then webhook `status:"failed"` *(confirm in spec review)* |
+| D5 | Invalid trigger handling | **Confirmed (Option A):** `401` for bad signature; signature-valid-but-schema-invalid with a usable `idempotency_key` → ack `202` then webhook `status:"failed"`; unparseable / no `idempotency_key` → non-`202` (`dispatch_failed`) |
 | D6 | Money-op idempotency | Build the Redis backend-result cache **seam** in Phase 1; implement the cache in Phase 2 with the first real money backend |
 | D7 | Backend abstraction | Single `GameBackend` protocol; per-game module + registry entry; MockBackend for Phase 1 |
 
-## 19. Items to confirm in spec review
+## 19. Resolved review items
 
-- **D5**: Confirm the graceful "ack 202 then webhook-failed" path for signature-valid but
-  schema-invalid bodies (alternative: return a non-202 and let Laravel mark `dispatch_failed`). The
-  spec assumes the graceful path.
+- **D5 — Resolved (Option A):** signature-valid but schema-invalid triggers are acked `202` then
+  reported via webhook `status:"failed"` (`invalid_payload: ...`). Non-`202` is reserved for bad
+  signatures and for bodies that cannot be correlated (invalid JSON / missing `idempotency_key`).
