@@ -86,19 +86,19 @@ In `tests/conftest.py`, inside the `seeded` fixture's `async with session_factor
 Add to `tests/unit/test_schemas_operations.py`:
 
 ```python
-def test_create_account_accepts_optional_account_username():
+def test_create_account_requires_account_username():
     op = operation_adapter.validate_python(
         {"idempotency_key": "k", "type": "CREATE_ACCOUNT", "user_id": 42, "game_id": 9,
-         "game_account_id": None, "account_username": "usr_42"}
+         "game_account_id": None, "account_username": "saudmalik42"}
     )
-    assert op.account_username == "usr_42"
+    assert op.account_username == "saudmalik42"
 
 
-def test_create_account_without_username_defaults_none():
-    op = operation_adapter.validate_python(
-        {"idempotency_key": "k", "type": "CREATE_ACCOUNT", "user_id": 42, "game_id": 9, "game_account_id": None}
-    )
-    assert op.account_username is None
+def test_create_account_without_username_is_rejected():
+    with pytest.raises(ValidationError):
+        operation_adapter.validate_python(
+            {"idempotency_key": "k", "type": "CREATE_ACCOUNT", "user_id": 42, "game_id": 9, "game_account_id": None}
+        )
 ```
 
 Add to `tests/unit/test_preflight.py`:
@@ -186,13 +186,16 @@ class BackendContext:
     account_username: str | None = None
 ```
 
-- [ ] **Step 6: Add `account_username` to `CreateAccountOp`**
+- [ ] **Step 6: Add `account_username` to `CreateAccountOp` (required)**
 
-In `app/schemas/operations.py`, in class `CreateAccountOp`, add:
+The contract (§4) sends `account_username` on every CREATE_ACCOUNT trigger, so it is required. In
+`app/schemas/operations.py`, in class `CreateAccountOp`, add:
 
 ```python
-    account_username: str | None = None
+    account_username: str = Field(min_length=1)
 ```
+
+(`Field` is already imported in that module.)
 
 - [ ] **Step 7: Update `build_context`**
 
@@ -256,16 +259,66 @@ async def build_context(
     )
 ```
 
+- [ ] **Step 7b: Echo `account_username` in MockBackend and fix the Phase 1 CREATE_ACCOUNT tests**
+
+The contract (§5) requires CREATE_ACCOUNT to echo the provided `account_username` as `result.username`
+for ALL backends, and `account_username` is now required (Step 6) — which breaks the two Phase-1
+CREATE_ACCOUNT tests that omit it. Update MockBackend and those tests.
+
+In `app/backends/mock/backend.py`, change `create_account` to echo the username (keep a fallback for
+direct unit calls that don't set it):
+
+```python
+    async def create_account(self, ctx: BackendContext) -> CreateAccountResult:
+        self._maybe_fail()
+        username = ctx.account_username or f"mock_{ctx.user_id}_{ctx.credentials.game_id}"
+        return CreateAccountResult(
+            username=username,
+            password="MockPass123!",
+            external_user_id=f"EXT{ctx.user_id}{ctx.credentials.game_id}",
+        )
+```
+
+In `tests/integration/test_executor.py`, update `test_create_account_includes_username_password` to
+send and assert the echoed username:
+
+```python
+    await _run(
+        {"idempotency_key": "k2", "type": "CREATE_ACCOUNT", "user_id": 42, "game_id": 7,
+         "game_account_id": None, "account_username": "saudmalik42"},
+        seeded,
+    )
+    body = route.calls.last.request.content.decode()
+    assert '"username":"saudmalik42"' in body and '"password":"' in body
+```
+
+In `tests/integration/test_full_loop.py`, update `test_create_account_round_trip`'s body to include
+`account_username` and change the final username assertion:
+
+```python
+    body = json.dumps(
+        {"idempotency_key": "loop-1", "type": "CREATE_ACCOUNT", "user_id": 42, "game_id": 7,
+         "game_account_id": None, "account_username": "saudmalik42"},
+        separators=(",", ":"),
+    )
+```
+```python
+    assert sent["result"]["username"] == "saudmalik42"
+```
+
 - [ ] **Step 8: Run tests to verify they pass**
 
 Run: `.venv/bin/python -m pytest tests/unit/test_preflight.py tests/unit/test_schemas_operations.py -q`
-Expected: PASS. Then full suite: `.venv/bin/python -m pytest -q` → all green (existing tests unaffected by the defaulted fields).
+Expected: PASS. Then full suite: `.venv/bin/python -m pytest -q` → all green (MockBackend echo + updated CREATE_ACCOUNT tests).
 
 - [ ] **Step 9: Commit**
 
 ```bash
-git add app/db/models.py app/backends/context.py app/schemas/operations.py app/preflight/checks.py tests/conftest.py tests/unit/test_preflight.py tests/unit/test_schemas_operations.py
-git commit -m "feat(phase2): plumb backend_driver, idempotency_key, account_username through context
+git add app/db/models.py app/backends/context.py app/schemas/operations.py app/preflight/checks.py app/backends/mock/backend.py tests/conftest.py tests/unit/test_preflight.py tests/unit/test_schemas_operations.py tests/integration/test_executor.py tests/integration/test_full_loop.py
+git commit -m "feat(phase2): plumb backend_driver, idempotency_key, required account_username
+
+CreateAccountOp.account_username is now required (Laravel always sends it per the
+updated contract); MockBackend echoes it. Updates the Phase 1 CREATE_ACCOUNT tests.
 
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ```
@@ -1579,8 +1632,8 @@ Append:
 ## GameVault
 - Set `games.backend_driver='gamevault'` and the `api_base_url` / `api_agent_id` / `api_secret_key` columns.
 - The VPS egress IP must be on GameVault's allowlist (else every call fails `gamevault:5:ip_not_whitelisted`).
-- CREATE_ACCOUNT needs `account_username` in the trigger (Laravel side); until then it fails
-  `account_username_required`.
+- CREATE_ACCOUNT receives `account_username` from Laravel (e.g. `saudmalik42`); Python creates the
+  GameVault account with exactly that name and echoes it as `result.username`.
 - Common reasons: `gamevault:7:insufficient_user_balance`, `gamevault:10:user_in_game`,
   `gamevault:20:account_exists`. Transient (`12`/`14`/`21`, 5xx, timeout) are retried automatically.
 ```
@@ -1599,7 +1652,7 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ## Phase-2 acceptance (manual, after the suite is green)
 
 Against the real Laravel + real GameVault (sandbox if available):
-1. Laravel ships `games.backend_driver` (set your GameVault game to `gamevault`) and `account_username` on CREATE_ACCOUNT. VPS IP allowlisted with GameVault.
+1. Laravel has shipped `games.backend_driver` + `account_username` (per the 2026-06-04 contract). Set your GameVault game's `backend_driver='gamevault'` and its `api_base_url`/`api_agent_id`/`api_secret_key`; ensure the VPS IP is allowlisted with GameVault.
 2. `make up`; `make ping` → 200.
 3. From Laravel, trigger **READ_BALANCE** / **AGENT_BALANCE** on the GameVault game → op SUCCEEDED with a real balance. **Verify the cents value matches GameVault's dashboard** (validates the decimal-dollar `*100` rule against a real response).
 4. **RECHARGE** a small amount → op SUCCEEDED; confirm the in-game balance increased by `ceil` whole dollars; re-trigger the same op (same idempotency_key) → no double credit (cache replay + GameVault `order_id`).

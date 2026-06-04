@@ -37,8 +37,8 @@ backend execution, spec D6 from Phase 1) and **driver-based backend selection** 
 - Reverse-engineered backends, captcha, persistent sessions (Phase 3).
 - Rate limiting, metrics (later).
 - `getLowDepositUsers` / `playerOffline` endpoints (not part of the six contract operations).
-- Laravel-side changes (the `backend_driver` column and `account_username` field are the user's to
-  ship; Python is built to match — see §10).
+- Laravel-side changes (the `backend_driver` column and `account_username` field — now shipped, see §10;
+  Python is built to match).
 
 ## 3. GameVault API summary (from the doc)
 
@@ -94,7 +94,7 @@ app/backends/context.py     # GameCredentials: add backend_driver
 app/preflight/checks.py     # populate credentials.backend_driver
 app/backends/registry.py    # resolve_backend(driver, *, credentials, http_client, settings)
 app/operations/executor.py  # resolve via driver; wire in the result cache
-app/schemas/operations.py   # CreateAccountOp: add optional account_username
+app/schemas/operations.py   # CreateAccountOp: add required account_username
 app/worker/settings.py      # add a redis client + result cache to the worker ctx
 app/config.py               # GameVault knobs (timeouts) if needed
 ```
@@ -245,12 +245,20 @@ Codes that are **transient/retryable** (treated like infra errors, not cached): 
   (`idempotency_key`, `account_username`), the `resolve_backend` signature, and the injected cache.
 - Gates: full suite green, `ruff`, `mypy` clean.
 
-## 10. Laravel-side dependencies (the user ships these)
+## 10. Laravel-side dependencies — ✅ SHIPPED (2026-06-04 contract update)
 
-1. **`games.backend_driver`** — migration adding `string('backend_driver', 32)->nullable()`; Filament
-   editable field (`mock` | `gamevault`); set GameVault games to `gamevault`. Read-only in Python.
-2. **`account_username`** on the CREATE_ACCOUNT `request_payload` (string, 6–32, `[A-Za-z0-9_]`).
-   Until shipped, GameVault CREATE_ACCOUNT fails with `account_username_required` (build-ahead).
+Both are already live in Laravel per the updated contract; Python is built to match (no longer
+build-ahead):
+
+1. **`games.backend_driver`** — column live; Filament select (`mock` | `gamevault`); set GameVault
+   games to `gamevault`. Read-only in Python.
+2. **`account_username`** on the CREATE_ACCOUNT `request_payload` — Laravel-generated (full_name folded
+   + user id, e.g. `saudmalik42`), always sent. Python creates the backend account with **exactly**
+   this name and echoes it as `result.username` (required field on `CreateAccountOp`).
+
+Also live: **`AGENT_BALANCE`** end-to-end (Laravel caches onto `games.agent_balance_cents`, which
+Python does not read). The only remaining operational dependency is the **GameVault IP allowlist** for
+the VPS egress IP.
 
 ## 11. Deferred / accepted limitations
 - Whole-dollar rounding (`ceil`) — exact cents impossible via GameVault (§4 note).
