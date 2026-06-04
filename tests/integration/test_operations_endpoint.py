@@ -4,7 +4,6 @@ import json
 import httpx
 import pytest
 
-from app.api.deps import verify_signature
 from app.api.operations import router
 from app.config import get_settings
 from app.security.hmac import sign
