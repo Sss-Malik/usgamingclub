@@ -27,6 +27,8 @@ class Settings(BaseSettings):
     webhook_backoff_base: float = 0.5
     webhook_backoff_max: float = 30.0
 
+    result_cache_ttl_seconds: int = 900
+
     mock_force_fail: bool = False
     mock_force_fail_reason: str = "forced mock failure"
 

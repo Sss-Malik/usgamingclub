@@ -27,15 +27,3 @@ def resolve_backend(
             )
         )
     raise BackendError(f"unknown_backend_driver:{driver}")
-
-
-def get_backend(game_id: int) -> GameBackend:
-    """Phase-1 shim: kept so executor.py (Task 8) can still import it unchanged.
-
-    Task 8 will replace this call with resolve_backend. Until then, every game
-    resolves to MockBackend via the default mock driver.
-    """
-    from app.config import get_settings  # local import to avoid circular import at module load
-
-    settings = get_settings()
-    return MockBackend(fail=settings.mock_force_fail, fail_reason=settings.mock_force_fail_reason)
