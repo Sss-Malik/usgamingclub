@@ -30,6 +30,7 @@ dev = [
     "pytest-asyncio>=0.23",
     "respx>=0.21",
     "aiosqlite>=0.20",
+    "aiomysql>=0.2",
     "ruff>=0.5",
     "mypy>=1.10",
 ]
