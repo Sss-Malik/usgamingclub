@@ -23,14 +23,15 @@ read creds from `BackendContext.credentials`. Implement the Redis backend-result
 non-idempotent ops (RECHARGE/REDEEM) so a worker restart cannot double-apply.
 
 ## Backends & drivers
-`games.backend_driver` selects the backend per game (`mock` | `gamevault` | `juwa`). `resolve_backend`
-builds the backend from the game's credentials + the shared httpx client. GameVault
+`games.backend_driver` selects the backend per game (`mock` | `gamevault` | `juwa` | `juwa2`).
+`resolve_backend` builds the backend from the game's credentials + the shared httpx client. GameVault
 (`app/backends/gamevault/`) is a synchronous official API: MD5 token auth
 (`md5(agent_id:timestamp:secret_key)`), multipart POST, a `{code,msg,data}` envelope, and a status-code
 dictionary. Money units: send whole dollars (`ceil(cents/100)`), read decimal dollars (`*100` → cents).
-**Juwa is the same provider** as GameVault and shares the entire wire protocol; the `juwa` driver routes
-to `GameVaultBackend` with that game's own per-row `api_base_url`/`api_agent_id`/`api_secret_key`. New
-sibling games from the same provider are added as a one-line alias in `app/backends/registry.py`.
+**Juwa and Juwa2 are the same provider** as GameVault and share the entire wire protocol; their
+drivers route to `GameVaultBackend` with each game's own per-row `api_base_url`/`api_agent_id`/
+`api_secret_key`. New sibling games from the same provider are added as a one-line alias in
+`app/backends/registry.py`.
 
 ## Result cache (money-op safety)
 `app/operations/result_cache.py` stores each operation's terminal outcome (success or business failure) in

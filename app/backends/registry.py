@@ -9,7 +9,7 @@ from app.config import Settings
 
 # Driver strings that share the GameVault provider's wire protocol (auth, endpoints, envelope).
 # Each game's per-row creds (api_base_url, api_agent_id, api_secret_key) are still distinct.
-_GAMEVAULT_PROVIDER_DRIVERS = frozenset({"gamevault", "juwa"})
+_GAMEVAULT_PROVIDER_DRIVERS = frozenset({"gamevault", "juwa", "juwa2"})
 
 
 def resolve_backend(
@@ -17,8 +17,8 @@ def resolve_backend(
 ) -> GameBackend:
     """Resolve the backend for an operation from its game's backend_driver.
 
-    `null`/`mock` -> MockBackend; `gamevault`/`juwa` -> GameVaultBackend (same provider, per-game
-    creds). Unknown -> BackendError.
+    `null`/`mock` -> MockBackend; `gamevault`/`juwa`/`juwa2` -> GameVaultBackend (same provider,
+    per-game creds). Unknown -> BackendError.
     """
     key = (driver or "mock").lower()
     if key == "mock":
