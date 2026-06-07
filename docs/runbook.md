@@ -19,3 +19,11 @@ Set `MOCK_FORCE_FAIL=true` (and optional `MOCK_FORCE_FAIL_REASON`) and restart t
 ## Webhook delivery
 Retries on conn-error/5xx/404 with backoff up to `WEBHOOK_MAX_BUDGET_SECONDS` (default 600s).
 `401`/`422` are sender bugs and are not retried — check signing / payload.
+
+## GameVault
+- Set `games.backend_driver='gamevault'` and the `api_base_url` / `api_agent_id` / `api_secret_key` columns.
+- The VPS egress IP must be on GameVault's allowlist (else every call fails `gamevault:5:ip_not_whitelisted`).
+- CREATE_ACCOUNT receives `account_username` from Laravel (e.g. `saudmalik42`); Python creates the
+  GameVault account with exactly that name and echoes it as `result.username`.
+- Common reasons: `gamevault:7:insufficient_user_balance`, `gamevault:10:user_in_game`,
+  `gamevault:20:account_exists`. Transient (`12`/`14`/`21`, 5xx, timeout) are retried automatically.

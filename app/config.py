@@ -20,12 +20,17 @@ class Settings(BaseSettings):
     db_name: str = ""
     db_user: str = ""
     db_password: str = ""
+    # SQLAlchemy async MySQL driver. Prod/Docker: "asyncmy" (compiled, fast). Local dev without
+    # Docker can use "aiomysql" (pure-Python, no build step).
+    db_driver: str = "asyncmy"
 
     redis_url: str = "redis://127.0.0.1:6379/0"
 
     webhook_max_budget_seconds: float = 600.0
     webhook_backoff_base: float = 0.5
     webhook_backoff_max: float = 30.0
+
+    result_cache_ttl_seconds: int = 900
 
     mock_force_fail: bool = False
     mock_force_fail_reason: str = "forced mock failure"
@@ -45,7 +50,7 @@ class Settings(BaseSettings):
     @property
     def db_dsn(self) -> str:
         return (
-            f"mysql+asyncmy://{self.db_user}:{self.db_password}"
+            f"mysql+{self.db_driver}://{self.db_user}:{self.db_password}"
             f"@{self.db_host}:{self.db_port}/{self.db_name}"
         )
 

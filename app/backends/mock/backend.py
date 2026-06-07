@@ -24,12 +24,11 @@ class MockBackend:
 
     async def create_account(self, ctx: BackendContext) -> CreateAccountResult:
         self._maybe_fail()
-        uid = ctx.user_id
-        gid = ctx.credentials.game_id
+        username = ctx.account_username or f"mock_{ctx.user_id}_{ctx.credentials.game_id}"
         return CreateAccountResult(
-            username=f"mock_{uid}_{gid}",
+            username=username,
             password="MockPass123!",
-            external_user_id=f"EXT{uid}{gid}",
+            external_user_id=f"EXT{ctx.user_id}{ctx.credentials.game_id}",
         )
 
     async def read_balance(self, ctx: BackendContext) -> ReadBalanceResult:

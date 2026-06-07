@@ -14,6 +14,7 @@ class CreateAccountOp(_Base):
     user_id: int
     game_id: int
     game_account_id: None = None
+    account_username: str = Field(min_length=1)
 
 
 class ReadBalanceOp(_Base):

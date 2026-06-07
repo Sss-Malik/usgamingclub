@@ -1,19 +1,53 @@
 # tests/unit/test_registry.py
+import pytest
+
+from app.backends.base import BackendError
+from app.backends.context import GameCredentials
+from app.backends.gamevault.backend import GameVaultBackend
 from app.backends.mock.backend import MockBackend
-from app.backends.registry import get_backend
-from app.config import get_settings
+from app.backends.registry import resolve_backend
+from app.config import Settings
 
 
-def test_registry_returns_mock_backend_phase1():
-    get_settings.cache_clear()
-    backend = get_backend(7)
-    assert isinstance(backend, MockBackend)
+def _creds(driver):
+    return GameCredentials(
+        game_id=9, name="g", backend_url=None, login_page_url=None,
+        backend_username=None, backend_password=None,
+        api_base_url="https://gv.test", api_agent_id="11", api_secret_key="s",
+        binding_key=None, backend_driver=driver,
+    )
 
 
-def test_registry_honors_force_fail(monkeypatch):
-    monkeypatch.setenv("MOCK_FORCE_FAIL", "true")
-    monkeypatch.setenv("MOCK_FORCE_FAIL_REASON", "manual")
-    get_settings.cache_clear()
-    backend = get_backend(7)
-    assert backend._fail is True and backend._fail_reason == "manual"
-    get_settings.cache_clear()
+def _settings():
+    return Settings(python_signing_secret="s")
+
+
+def test_none_or_mock_returns_mock_backend():
+    s = _settings()
+    assert isinstance(resolve_backend(None, credentials=_creds(None), http_client=None, settings=s), MockBackend)
+    assert isinstance(resolve_backend("mock", credentials=_creds("mock"), http_client=None, settings=s), MockBackend)
+
+
+def test_gamevault_driver_returns_gamevault_backend():
+    s = _settings()
+    backend = resolve_backend("gamevault", credentials=_creds("gamevault"), http_client=object(), settings=s)
+    assert isinstance(backend, GameVaultBackend)
+
+
+def test_unknown_driver_raises():
+    s = _settings()
+    with pytest.raises(BackendError):
+        resolve_backend("nope", credentials=_creds("nope"), http_client=None, settings=s)
+
+
+def test_gamevault_missing_credentials_raises():
+    s = _settings()
+    creds = GameCredentials(
+        game_id=9, name="g", backend_url=None, login_page_url=None,
+        backend_username=None, backend_password=None,
+        api_base_url=None, api_agent_id=None, api_secret_key=None,
+        binding_key=None, backend_driver="gamevault",
+    )
+    with pytest.raises(BackendError) as ei:
+        resolve_backend("gamevault", credentials=creds, http_client=object(), settings=s)
+    assert ei.value.reason == "missing_gamevault_credentials"

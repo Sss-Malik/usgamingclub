@@ -9,4 +9,5 @@ async def execute_operation_task(ctx: dict, payload: dict) -> None:
         session_factory=ctx["session_factory"],
         http_client=ctx["http_client"],
         settings=get_settings(),
+        result_cache=ctx["result_cache"],
     )

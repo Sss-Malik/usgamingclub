@@ -8,10 +8,12 @@ from app.config import get_settings
 
 SECRET_KEYS = {
     "password",
+    "login_pwd",
     "backend_password",
     "api_secret_key",
     "binding_key",
     "secret",
+    "token",
     "x-signature",
 }
 

@@ -7,7 +7,8 @@ from app.schemas.operations import operation_adapter
 
 def test_parses_create_account():
     op = operation_adapter.validate_python(
-        {"idempotency_key": "k", "type": "CREATE_ACCOUNT", "user_id": 42, "game_id": 7, "game_account_id": None}
+        {"idempotency_key": "k", "type": "CREATE_ACCOUNT", "user_id": 42, "game_id": 7,
+         "game_account_id": None, "account_username": "saudmalik42"}
     )
     assert op.type == "CREATE_ACCOUNT"
     assert op.game_id == 7
@@ -45,4 +46,19 @@ def test_rejects_empty_idempotency_key():
     with pytest.raises(ValidationError):
         operation_adapter.validate_python(
             {"idempotency_key": "", "type": "READ_BALANCE", "user_id": 1, "game_id": 7, "game_account_id": 1}
+        )
+
+
+def test_create_account_requires_account_username():
+    op = operation_adapter.validate_python(
+        {"idempotency_key": "k", "type": "CREATE_ACCOUNT", "user_id": 42, "game_id": 9,
+         "game_account_id": None, "account_username": "saudmalik42"}
+    )
+    assert op.account_username == "saudmalik42"
+
+
+def test_create_account_without_username_is_rejected():
+    with pytest.raises(ValidationError):
+        operation_adapter.validate_python(
+            {"idempotency_key": "k", "type": "CREATE_ACCOUNT", "user_id": 42, "game_id": 9, "game_account_id": None}
         )
