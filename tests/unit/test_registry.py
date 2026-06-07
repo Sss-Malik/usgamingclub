@@ -51,3 +51,25 @@ def test_gamevault_missing_credentials_raises():
     with pytest.raises(BackendError) as ei:
         resolve_backend("gamevault", credentials=creds, http_client=object(), settings=s)
     assert ei.value.reason == "missing_gamevault_credentials"
+
+
+def test_juwa_driver_routes_to_gamevault_backend():
+    # Juwa is the same provider as GameVault; per-game creds distinguish them. Both driver
+    # strings resolve to the same backend class.
+    s = _settings()
+    backend = resolve_backend("juwa", credentials=_creds("juwa"), http_client=object(), settings=s)
+    assert isinstance(backend, GameVaultBackend)
+
+
+def test_juwa_missing_credentials_raises_same_reason():
+    # Same missing-creds guard as gamevault; same reason slug so logs/dashboards group by provider.
+    s = _settings()
+    creds = GameCredentials(
+        game_id=9, name="g", backend_url=None, login_page_url=None,
+        backend_username=None, backend_password=None,
+        api_base_url=None, api_agent_id=None, api_secret_key=None,
+        binding_key=None, backend_driver="juwa",
+    )
+    with pytest.raises(BackendError) as ei:
+        resolve_backend("juwa", credentials=creds, http_client=object(), settings=s)
+    assert ei.value.reason == "missing_gamevault_credentials"
