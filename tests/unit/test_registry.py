@@ -73,3 +73,23 @@ def test_juwa_missing_credentials_raises_same_reason():
     with pytest.raises(BackendError) as ei:
         resolve_backend("juwa", credentials=creds, http_client=object(), settings=s)
     assert ei.value.reason == "missing_gamevault_credentials"
+
+
+def test_juwa2_driver_routes_to_gamevault_backend():
+    # juwa2 is another sibling game on the same provider as gamevault/juwa.
+    s = _settings()
+    backend = resolve_backend("juwa2", credentials=_creds("juwa2"), http_client=object(), settings=s)
+    assert isinstance(backend, GameVaultBackend)
+
+
+def test_juwa2_missing_credentials_raises_same_reason():
+    s = _settings()
+    creds = GameCredentials(
+        game_id=9, name="g", backend_url=None, login_page_url=None,
+        backend_username=None, backend_password=None,
+        api_base_url=None, api_agent_id=None, api_secret_key=None,
+        binding_key=None, backend_driver="juwa2",
+    )
+    with pytest.raises(BackendError) as ei:
+        resolve_backend("juwa2", credentials=creds, http_client=object(), settings=s)
+    assert ei.value.reason == "missing_gamevault_credentials"

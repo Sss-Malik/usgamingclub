@@ -20,9 +20,10 @@ Set `MOCK_FORCE_FAIL=true` (and optional `MOCK_FORCE_FAIL_REASON`) and restart t
 Retries on conn-error/5xx/404 with backoff up to `WEBHOOK_MAX_BUDGET_SECONDS` (default 600s).
 `401`/`422` are sender bugs and are not retried — check signing / payload.
 
-## GameVault / Juwa (same provider)
-- Set `games.backend_driver` to `gamevault` or `juwa` and the `api_base_url` / `api_agent_id` /
-  `api_secret_key` columns (each game has its own credentials, even when the driver is shared).
+## GameVault / Juwa / Juwa2 (same provider)
+- Set `games.backend_driver` to `gamevault`, `juwa`, or `juwa2` and the `api_base_url` /
+  `api_agent_id` / `api_secret_key` columns (each game has its own credentials, even when the
+  driver is shared).
 - The VPS egress IP must be on the provider's allowlist (else every call fails
   `gamevault:5:ip_not_whitelisted`; some sandboxes report it as `gamevault:3:invalid_token`).
 - CREATE_ACCOUNT receives `account_username` from Laravel (e.g. `saudmalik42`); Python creates the
