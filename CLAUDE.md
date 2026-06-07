@@ -12,8 +12,9 @@ Laravel owns all money/account writes; this service reads the shared MySQL only.
 - HMAC must be byte-exact over the raw body; re-sign on every webhook retry (300s replay window).
 - Always return `202` for a correlatable trigger; report real failures via the webhook (`status:"failed"`).
   Reserve non-`202` for bad signatures (401) and uncorrelatable bodies (400).
-- Backend selection comes from `games.backend_driver` (read-only): `mock` | `gamevault`. New backends add a
-  module + a `resolve_backend` branch.
+- Backend selection comes from `games.backend_driver` (read-only): `mock` | `gamevault` | `juwa`. New
+  backends add a module + a `resolve_backend` branch; sibling games on an existing provider (e.g. `juwa`
+  shares GameVault's API) are added as an alias in the registry.
 - GameVault: amounts are sent as whole dollars via `ceil(cents/100)`; balances read as decimal dollars `*100`.
   Pass `idempotency_key` as `order_id` (GameVault dedupes). Generated passwords are memorable (word+digits).
 - Cache terminal outcomes (success + business failures) in the result cache; never cache transient errors

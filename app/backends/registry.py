@@ -7,17 +7,23 @@ from app.backends.mock.backend import MockBackend
 from app.config import Settings
 
 
+# Driver strings that share the GameVault provider's wire protocol (auth, endpoints, envelope).
+# Each game's per-row creds (api_base_url, api_agent_id, api_secret_key) are still distinct.
+_GAMEVAULT_PROVIDER_DRIVERS = frozenset({"gamevault", "juwa"})
+
+
 def resolve_backend(
     driver: str | None, *, credentials: GameCredentials, http_client, settings: Settings
 ) -> GameBackend:
     """Resolve the backend for an operation from its game's backend_driver.
 
-    `null`/`mock` -> MockBackend; `gamevault` -> GameVaultBackend. Unknown -> BackendError.
+    `null`/`mock` -> MockBackend; `gamevault`/`juwa` -> GameVaultBackend (same provider, per-game
+    creds). Unknown -> BackendError.
     """
     key = (driver or "mock").lower()
     if key == "mock":
         return MockBackend(fail=settings.mock_force_fail, fail_reason=settings.mock_force_fail_reason)
-    if key == "gamevault":
+    if key in _GAMEVAULT_PROVIDER_DRIVERS:
         if not (credentials.api_base_url and credentials.api_agent_id and credentials.api_secret_key):
             raise BackendError("missing_gamevault_credentials")
         return GameVaultBackend(
