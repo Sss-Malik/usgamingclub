@@ -27,9 +27,12 @@ async def receive_operation(
         logger.warning("operation_missing_idempotency_key", phase="received")
         return Response(status_code=400)
 
-    # Per-driver retry policy: peek the game's driver to decide arq's _max_tries.
-    # Default (3) is safe for idempotent drivers (GameVault family). Non-idempotent
-    # drivers (gameroom) get _max_tries=1 so a worker crash can't double-apply funds.
+    # Per-driver retry policy. arq has NO _max_tries kwarg on enqueue_job (only _job_id /
+    # _queue_name / _defer_* / _expires / _job_try). Any other _* kwarg is forwarded to the task
+    # function and crashes with TypeError. So we embed the retry limit INSIDE the payload dict;
+    # the worker task reads it and uses ctx["job_try"] to short-circuit retries for non-idempotent
+    # drivers (gameroom, goldentreasure). Idempotent drivers (GameVault family) skip this and use
+    # the worker's default max_tries=3 for transient resilience.
     max_tries: int | None = None
     game_id = data.get("game_id") if isinstance(data, dict) else None
     if isinstance(game_id, int):
@@ -43,9 +46,12 @@ async def receive_operation(
         except Exception:  # noqa: BLE001 - DB blip: fall back to default; preflight surfaces the real error
             logger.exception("driver_peek_failed", idempotency_key=key, phase="received")
 
+    if max_tries is not None:
+        data = {**data, "_max_tries": max_tries}
+
     try:
         await request.app.state.arq.enqueue_job(
-            "execute_operation_task", data, _job_id=key, _max_tries=max_tries,
+            "execute_operation_task", data, _job_id=key,
         )
     except Exception:  # noqa: BLE001 - any enqueue failure must surface as a non-202
         logger.exception("operation_enqueue_failed", idempotency_key=key, phase="enqueued")

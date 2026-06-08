@@ -11,10 +11,26 @@ from fastapi import FastAPI
 
 
 class FakeArq:
+    """Mirrors real arq's enqueue_job signature: only the documented control kwargs are accepted as
+    named params. ANY unknown _* kwarg would land in **kwargs and be forwarded to the task function
+    as a normal kwarg — which is the exact production bug this enforces against.
+    """
+
     def __init__(self):
         self.jobs = []
 
-    async def enqueue_job(self, func, payload, _job_id=None, _max_tries=None):
+    async def enqueue_job(
+        self, func, *args,
+        _job_id=None, _queue_name=None, _defer_until=None, _defer_by=None,
+        _expires=None, _job_try=None,
+        **kwargs,
+    ):
+        if kwargs:
+            raise TypeError(
+                f"enqueue_job got unexpected control kwargs {sorted(kwargs)} — these would be "
+                f"forwarded to the task function by real arq and crash with TypeError."
+            )
+        payload = args[0] if args else None
         self.jobs.append((func, payload, _job_id))
         return object()
 
@@ -66,7 +82,7 @@ async def test_missing_idempotency_key_returns_400(app):
 
 async def test_enqueue_failure_returns_500(app):
     class FailingArq:
-        async def enqueue_job(self, func, payload, _job_id=None, _max_tries=None):
+        async def enqueue_job(self, func, *args, _job_id=None, **kwargs):
             raise RuntimeError("redis down")
 
     app.state.arq = FailingArq()
@@ -80,70 +96,51 @@ async def test_enqueue_failure_returns_500(app):
     assert resp.status_code == 500
 
 
-async def test_idempotent_driver_uses_default_max_tries(seeded, app):
-    # Wire a real session_factory + a gamevault game (id=9 in conftest seed) so the endpoint's
-    # driver peek actually runs and confirms gamevault is NOT in NON_IDEMPOTENT_DRIVERS.
+async def test_idempotent_driver_omits_max_tries_from_payload(seeded, app):
+    # Real arq has NO _max_tries control kwarg on enqueue_job — passing one forwards it to the task
+    # function and crashes with TypeError. So we embed the retry limit INSIDE the payload dict.
+    # For idempotent drivers (gamevault family), we don't set it at all -> worker uses the default.
     app.state.session_factory = seeded
     body = json.dumps(
         {"idempotency_key": "gv-1", "type": "READ_BALANCE", "user_id": 43, "game_id": 9, "game_account_id": 2001},
         separators=(",", ":"),
     )
     headers = sign("s", body)
-
-    class CapturingArq:
-        def __init__(self): self.jobs = []
-        async def enqueue_job(self, func, payload, _job_id=None, _max_tries=None):
-            self.jobs.append({"func": func, "payload": payload, "_job_id": _job_id, "_max_tries": _max_tries})
-    app.state.arq = CapturingArq()
-
     async with await _client(app) as c:
         resp = await c.post("/operations", content=body, headers=headers)
     assert resp.status_code == 202
-    # gamevault driver -> endpoint leaves _max_tries at None so arq uses WorkerSettings.max_tries (3).
-    assert app.state.arq.jobs[0]["_max_tries"] is None
+    _, enqueued_payload, _ = app.state.arq.jobs[0]
+    assert "_max_tries" not in enqueued_payload          # not set for idempotent drivers
 
 
-async def test_gameroom_driver_uses_max_tries_1(seeded, app):
+async def test_gameroom_driver_embeds_max_tries_1_in_payload(seeded, app):
+    # Worker reads payload["_max_tries"] and uses ctx["job_try"] to short-circuit retries.
     app.state.session_factory = seeded
     body = json.dumps(
         {"idempotency_key": "gr-1", "type": "AGENT_BALANCE", "game_id": 11},
         separators=(",", ":"),
     )
     headers = sign("s", body)
-
-    class CapturingArq:
-        def __init__(self): self.jobs = []
-        async def enqueue_job(self, func, payload, _job_id=None, _max_tries=None):
-            self.jobs.append({"_max_tries": _max_tries})
-    app.state.arq = CapturingArq()
-
     async with await _client(app) as c:
         resp = await c.post("/operations", content=body, headers=headers)
     assert resp.status_code == 202
-    assert app.state.arq.jobs[0]["_max_tries"] == 1
+    _, enqueued_payload, _ = app.state.arq.jobs[0]
+    assert enqueued_payload["_max_tries"] == 1
 
 
-async def test_goldentreasure_driver_uses_max_tries_1(seeded, app):
-    # Same safety property as gameroom: a non-idempotent driver gets _max_tries=1 so a worker
-    # crash mid-money-op cannot retry and double-apply. Explicit endpoint-level test (the registry
-    # set membership test isn't enough — guards against future regressions of the endpoint logic).
+async def test_goldentreasure_driver_embeds_max_tries_1_in_payload(seeded, app):
+    # Same financial safety property as gameroom (no order_id -> no double-apply guarantee).
     app.state.session_factory = seeded
     body = json.dumps(
         {"idempotency_key": "gt-mt-1", "type": "AGENT_BALANCE", "game_id": 13},
         separators=(",", ":"),
     )
     headers = sign("s", body)
-
-    class CapturingArq:
-        def __init__(self): self.jobs = []
-        async def enqueue_job(self, func, payload, _job_id=None, _max_tries=None):
-            self.jobs.append({"_max_tries": _max_tries})
-    app.state.arq = CapturingArq()
-
     async with await _client(app) as c:
         resp = await c.post("/operations", content=body, headers=headers)
     assert resp.status_code == 202
-    assert app.state.arq.jobs[0]["_max_tries"] == 1
+    _, enqueued_payload, _ = app.state.arq.jobs[0]
+    assert enqueued_payload["_max_tries"] == 1
 
 
 async def test_unknown_game_id_falls_back_to_default(seeded, app):
@@ -153,15 +150,9 @@ async def test_unknown_game_id_falls_back_to_default(seeded, app):
         separators=(",", ":"),
     )
     headers = sign("s", body)
-
-    class CapturingArq:
-        def __init__(self): self.jobs = []
-        async def enqueue_job(self, func, payload, _job_id=None, _max_tries=None):
-            self.jobs.append({"_max_tries": _max_tries})
-    app.state.arq = CapturingArq()
-
     async with await _client(app) as c:
         resp = await c.post("/operations", content=body, headers=headers)
     assert resp.status_code == 202
-    # Default policy (None / 3); preflight in the worker will fail with game_not_found later.
-    assert app.state.arq.jobs[0]["_max_tries"] in (None, 3)
+    # Unknown game -> no driver peek hit -> _max_tries not embedded; worker uses the default.
+    _, enqueued_payload, _ = app.state.arq.jobs[0]
+    assert "_max_tries" not in enqueued_payload

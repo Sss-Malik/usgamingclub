@@ -92,3 +92,37 @@ async def test_goldentreasure_without_redis_reports_failure(seeded):
     body = route.calls.last.request.content.decode()
     assert '"status":"failed"' in body and "missing_redis_client" in body
     assert await cache.get("gt-no-redis") is None        # config error -> not cached
+
+
+@respx.mock
+async def test_retry_blocked_reports_failure_without_calling_backend(seeded):
+    # arq retried a non-idempotent op (the previous attempt crashed mid-call). The worker passes
+    # retry_blocked=True; the executor must NOT call the backend and must deliver a clear failure.
+    route = respx.post(WEBHOOK).mock(return_value=httpx.Response(200, json={"ok": True}))
+    cache = InMemoryResultCache()
+
+    backend_call_count = 0
+
+    class TrackingBackend:
+        async def read_balance(self, ctx):
+            nonlocal backend_call_count
+            backend_call_count += 1
+            from app.schemas.results import ReadBalanceResult
+            return ReadBalanceResult(balance_cents=999)
+
+    def fake_resolve(driver, *, credentials, http_client, settings, session_store=None, redis=None):
+        return TrackingBackend()
+
+    payload = {"idempotency_key": "rb-1", "type": "READ_BALANCE", "user_id": 42, "game_id": 7,
+               "game_account_id": 1001}
+    async with httpx.AsyncClient() as client:
+        await execute_operation(
+            payload, session_factory=seeded, http_client=client, settings=_settings(),
+            result_cache=cache, retry_blocked=True, resolve=fake_resolve,
+        )
+    assert backend_call_count == 0                       # backend NOT called
+    body = route.calls.last.request.content.decode()
+    assert '"status":"failed"' in body and "retry_blocked" in body
+    # NOT cached — the operation may have been applied on the prior attempt; we don't want a
+    # later replay (different idempotency_key edge case) to also short-circuit.
+    assert await cache.get("rb-1") is None

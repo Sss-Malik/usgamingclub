@@ -26,12 +26,26 @@ async def execute_operation(
     result_cache: ResultCache | None = None,
     session_store=None,
     redis=None,
+    retry_blocked: bool = False,
     resolve=_resolve_backend,
 ) -> None:
     if result_cache is None:
         result_cache = InMemoryResultCache()
     key = str(payload.get("idempotency_key", ""))
     log = logger.bind(idempotency_key=key, phase="received")
+
+    # 0. Retry blocked: arq is re-running a non-idempotent op (worker likely crashed mid-call on
+    # the previous attempt). Report failure now so Laravel finalizes the op in seconds instead of
+    # waiting 10 min for the reaper. The backend MAY have already applied the change — operator
+    # may need to reconcile via the provider's dashboard.
+    if retry_blocked:
+        outcome = CachedOutcome(
+            "failed", None,
+            "retry_blocked: non-idempotent op crashed mid-flight, manual reconcile may be required",
+        )
+        log.warning("operation_retry_blocked", reason=outcome.reason)
+        await _deliver(http_client, settings, key, outcome)
+        return
 
     # 1. Validate (invalid payloads are reported, never cached).
     try:

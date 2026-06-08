@@ -53,10 +53,12 @@ two workers from re-logging-in simultaneously and invalidating each other's sess
 
 **Money safety on non-idempotent backends:** Gameroom has no `order_id` / dedupe. We register
 `gameroom` in `NON_IDEMPOTENT_DRIVERS` (`app/backends/registry.py`). The `/operations` endpoint
-peeks the game's driver via `GamesRepository.get_driver(game_id)` and passes arq `_max_tries=1` for
-non-idempotent drivers, so a worker crash mid-money-op cannot retry and double-apply. Laravel's
-10-min reaper marks the op failed + refunds the wallet; the operator reconciles any in-game balance
-change manually via Gameroom's dashboard.
+peeks the game's driver via `GamesRepository.get_driver(game_id)` and **embeds `_max_tries=1` inside
+the enqueued payload** (arq has no `_max_tries` kwarg on `enqueue_job`). On a retry, the worker reads
+`ctx["job_try"]` against `payload["_max_tries"]` and passes `retry_blocked=True` to the executor,
+which delivers a `retry_blocked` failure webhook **without calling the backend**. Laravel finalizes
+in seconds; the 10-min reaper is only a secondary safety net. The operator reconciles any in-game
+balance change manually via Gameroom's dashboard if the prior attempt had partially applied.
 
 ## Reverse-engineered backends (Golden Treasure)
 Golden Treasure (`app/backends/goldentreasure/`) is the second session-holding backend, with much
@@ -77,5 +79,6 @@ ex=5` (TTL = the spacing window; never released — lets the lock auto-expire). 
 throttle. Hitting 167 anyway surfaces as transient (not cached).
 
 **Money safety:** `goldentreasure` is in `NON_IDEMPOTENT_DRIVERS` (no `order_id`). API endpoint
-passes `_max_tries=1`; a worker crash mid-money-op is failed+refunded by Laravel's reaper, with
-manual reconcile via the agent UI.
+embeds `_max_tries=1` in the payload; the worker short-circuits the retry with a `retry_blocked`
+failure webhook so Laravel finalizes in seconds (reaper as fallback). Operator reconciles any in-game
+balance change via the agent UI if the prior attempt had partially applied.
