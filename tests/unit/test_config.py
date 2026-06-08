@@ -41,6 +41,18 @@ def test_require_runtime_settings_rejects_empty_secret():
     require_runtime_settings(Settings(python_signing_secret="configured"))
 
 
+def test_captcha_and_aspnet_session_defaults():
+    from app.config import Settings
+
+    s = Settings()
+    assert s.anticaptcha_poll_interval_seconds == 2.0
+    assert s.anticaptcha_max_poll_seconds == 120.0
+    assert s.captcha_login_max_attempts == 3
+    assert s.aspnet_session_ttl_seconds == 1800
+    assert s.aspnet_lock_ttl_seconds == 20
+    assert s.aspnet_lock_acquire_timeout_seconds == 30.0
+
+
 def test_db_driver_override_changes_dsn(monkeypatch):
     s = _fresh_settings(
         monkeypatch,
