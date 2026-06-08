@@ -46,3 +46,21 @@ Retries on conn-error/5xx/404 with backoff up to `WEBHOOK_MAX_BUDGET_SECONDS` (d
   `gameroom:auth_failed` (creds wrong / session can't be refreshed). Transient: `gameroom:server_error`,
   network/5xx.
 - To force a session refresh: `redis-cli DEL gameroom_session:<game_id>`. Next op will re-login.
+
+## Golden Treasure (Cloudflare-fronted reverse-engineered backend)
+- Set `games.backend_driver='goldentreasure'` plus `backend_url=https://agent.goldentreasure.mobi`,
+  `backend_username`, `backend_password` (the agent's login). No `api_*` columns needed.
+- **No IP allowlist** (Golden Treasure uses Cloudflare, not IP-based ACLs). Our `_BROWSER_HEADERS_BASE`
+  sends the header set CF requires.
+- Sessions cached in Redis (`gtreasure_session:{game_id}`, 24h TTL). First op lazy-logs-in; later
+  ops reuse the token. To force re-login: `redis-cli DEL gtreasure_session:<game_id>`.
+- Mutating ops (savePlayer/enterScore) self-serialize at ≥5s spacing per game via
+  `gtreasure_throttle:{game_id}` (TTL 5s, auto-expires). Reads are not throttled.
+- A worker crash during RECHARGE/REDEEM does NOT retry (per-driver `_max_tries=1`). Laravel reaper
+  fails+refunds at 10 min; if Golden Treasure had already applied, reconcile via the agent dashboard.
+- Common reasons: `gtreasure:account_exists`, `gtreasure:operation_refused` (over-limit /
+  insufficient), `gtreasure:invalid_password_format`, `gtreasure:auth_failed` (creds wrong / session
+  unrecoverable), `gtreasure:rate_limited` (transient — Laravel reaper picks up),
+  `gtreasure:requires_operator_action_*` (2FA / verify code — clear via agent UI).
+- The agent account must **not have 2FA enabled** — Google Authenticator (`code:30200`/`30201`) and
+  system verify codes (`code:30100`) require operator interaction; our automation can't satisfy them.
