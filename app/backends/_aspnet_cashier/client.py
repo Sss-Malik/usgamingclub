@@ -90,3 +90,66 @@ class AspnetCashierClient:
             ttl_seconds=self._session_ttl,
         )
         return cookie
+
+    # ---- request ----
+
+    async def request_text(
+        self, method: str, path: str, *,
+        form: dict[str, str | int] | None = None,
+        params: dict[str, str | int] | None = None,
+    ) -> str:
+        """One module-page request with cookie + Accept-Language. Retries exactly once
+        if the response indicates a dead session (500 NRE, or 200 returning the login page).
+
+        Returns the raw response text; callers parse it.
+        """
+        cookie = await self.get_or_login()
+        resp = await self._do_request(method, path, cookie, form=form, params=params)
+        if self._looks_dead(resp):
+            await self._store.clear(self._game_id)
+            cookie = await self.get_or_login()
+            resp = await self._do_request(method, path, cookie, form=form, params=params)
+            if self._looks_dead(resp):
+                raise TransientBackendError(f"{self._driver}:session_dead_after_relogin")
+        if resp.status_code >= 500:
+            raise TransientBackendError(f"{self._driver}:http_{resp.status_code}")
+        if resp.status_code >= 400 and resp.status_code != 301:
+            raise BackendError(f"{self._driver}:http_{resp.status_code}")
+        return resp.text
+
+    async def _do_request(
+        self, method: str, path: str, cookie: str, *,
+        form: dict[str, str | int] | None = None,
+        params: dict[str, str | int] | None = None,
+    ) -> httpx.Response:
+        url = f"{self._base}{path}" if path.startswith("/") else f"{self._base}/{path}"
+        headers = {**_BASE_HEADERS}
+        cookies = {_SESSION_COOKIE: cookie}
+        try:
+            if method == "GET":
+                return await self._http.get(
+                    url, params=_str_map(params or {}), headers=headers, cookies=cookies,
+                    follow_redirects=False,
+                )
+            headers["Content-Type"] = _FORM_CT
+            body = urlencode(_str_map(form or {})).encode()
+            return await self._http.post(
+                url, content=body, headers=headers, cookies=cookies, follow_redirects=False,
+            )
+        except httpx.HTTPError as exc:
+            raise TransientBackendError(f"{self._driver}:transport:{type(exc).__name__}") from exc
+
+    @staticmethod
+    def _looks_dead(resp: httpx.Response) -> bool:
+        """True if the response looks like the dead-session NRE or the login page."""
+        if resp.status_code == 500 and "Server Error in '/' Application" in resp.text:
+            return True
+        if resp.status_code == 200 and 'name="txtLoginName"' in resp.text:
+            return True
+        if resp.status_code == 301 and "errtype=overtime" in resp.headers.get("Location", ""):
+            return True
+        return False
+
+
+def _str_map(d: dict) -> dict[str, str]:
+    return {k: ("" if v is None else str(v)) for k, v in d.items()}
