@@ -1,0 +1,116 @@
+# app/backends/goldentreasure/backend.py
+import math
+
+from app.backends.base import BackendError
+from app.backends.context import BackendContext
+from app.backends.goldentreasure.client import GoldenTreasureClient
+from app.backends.goldentreasure.passwords import generate_memorable_password
+from app.schemas.results import (
+    AgentBalanceResult,
+    CreateAccountResult,
+    ReadBalanceResult,
+    RechargeResult,
+    RedeemResult,
+    ResetPasswordResult,
+)
+
+
+def _to_cents(value) -> int:
+    return round(float(value) * 100)
+
+
+def _to_dollars(cents: int) -> str:
+    return str(math.ceil(cents / 100))
+
+
+class GoldenTreasureBackend:
+    def __init__(self, client: GoldenTreasureClient) -> None:
+        self._client = client
+
+    # ---- AGENT_BALANCE ----
+
+    async def agent_balance(self, ctx: BackendContext) -> AgentBalanceResult:
+        data = await self._client.call("/api/user/CurScore", {})
+        v = data.get("LimitNum")
+        if v is None:
+            raise BackendError("gtreasure:agent_balance_missing")
+        return AgentBalanceResult(agent_balance_cents=_to_cents(v))
+
+    # ---- READ_BALANCE ----
+
+    async def read_balance(self, ctx: BackendContext) -> ReadBalanceResult:
+        data = await self._client.call(
+            "/api/account/getPlayerScore", {"account": ctx.account.username},
+        )
+        return ReadBalanceResult(balance_cents=_to_cents(data.get("curScore", 0)))
+
+    # ---- CREATE_ACCOUNT ----
+
+    async def create_account(self, ctx: BackendContext) -> CreateAccountResult:
+        if not ctx.account_username:
+            raise BackendError("account_username_required")
+        pwd = generate_memorable_password()       # alphanumeric (satisfies 6-16 letters+digits rule)
+        await self._client.call(
+            "/api/account/savePlayer",
+            {
+                "account": ctx.account_username,
+                "pwd": pwd,
+                "score": "0",
+                "name": "", "phone": "", "tel_area_code": "", "remark": "",
+            },
+            throttle=True,
+        )
+        # savePlayer doesn't return a uid (spec GT4) -> external_user_id=None.
+        return CreateAccountResult(
+            username=ctx.account_username, password=pwd, external_user_id=None,
+        )
+
+    # ---- RESET_PASSWORD ----
+
+    async def reset_password(self, ctx: BackendContext) -> ResetPasswordResult:
+        pwd = generate_memorable_password()
+        await self._client.call(
+            "/api/account/updatePlayer",
+            {
+                "account": ctx.account.username,
+                "pwd": pwd,
+                "name": "", "phone": "", "remark": "", "tel_area_code": "",
+            },
+            # NOT throttled (spec GT7).
+        )
+        return ResetPasswordResult(password=pwd)
+
+    # ---- RECHARGE ----
+
+    async def recharge(
+        self, ctx: BackendContext, *,
+        amount_cents: int, bonus_cents: int, total_credit_cents: int,
+    ) -> RechargeResult:
+        await self._client.call(
+            "/api/account/enterScore",
+            {
+                "account": ctx.account.username,
+                "score": _to_dollars(total_credit_cents),
+                "remark": "",
+                "user_type": "player",
+            },
+            throttle=True,
+        )
+        # enterScore success has no balance; we omit it (contract makes it optional).
+        return RechargeResult()
+
+    # ---- REDEEM ----
+
+    async def redeem(self, ctx: BackendContext, *, amount_cents: int) -> RedeemResult:
+        dollars = math.ceil(amount_cents / 100)
+        await self._client.call(
+            "/api/account/enterScore",
+            {
+                "account": ctx.account.username,
+                "score": str(-dollars),               # negative score = withdraw
+                "remark": "",
+                "user_type": "player",
+            },
+            throttle=True,
+        )
+        return RedeemResult()
