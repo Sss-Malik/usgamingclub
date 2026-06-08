@@ -33,3 +33,13 @@ async def test_accounts_repo_get(seeded):
 async def test_operations_repo_get_by_key_returns_none_when_absent(seeded):
     async with seeded() as s:
         assert await GameOperationsRepository(s).get_by_idempotency_key("missing") is None
+
+
+async def test_games_repo_get_driver_returns_string(seeded):
+    async with seeded() as s:
+        assert await GamesRepository(s).get_driver(11) == "gameroom"
+
+
+async def test_games_repo_get_driver_returns_none_when_absent(seeded):
+    async with seeded() as s:
+        assert await GamesRepository(s).get_driver(99999) is None

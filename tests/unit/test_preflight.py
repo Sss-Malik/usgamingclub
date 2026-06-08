@@ -64,3 +64,25 @@ async def test_create_account_username_flows_into_context(seeded):
         )
     assert ctx.account_username == "usr_43"
     assert ctx.account is None
+
+
+async def test_gameroom_game_missing_credentials_raises(seeded):
+    async with seeded() as s:
+        with pytest.raises(PreflightError) as ei:
+            await build_context(
+                s, type="AGENT_BALANCE", idempotency_key="k", user_id=None,
+                game_id=12, game_account_id=None,
+            )
+    assert "missing_gameroom_credentials" in ei.value.reason
+
+
+async def test_gameroom_context_carries_credentials(seeded):
+    async with seeded() as s:
+        ctx = await build_context(
+            s, type="READ_BALANCE", idempotency_key="idem-1", user_id=51,
+            game_id=11, game_account_id=3001,
+        )
+    assert ctx.credentials.backend_driver == "gameroom"
+    assert ctx.credentials.backend_url == "https://gr.test"
+    assert ctx.credentials.backend_username == "TestGR159"
+    assert ctx.account.external_user_id == "2998032"
