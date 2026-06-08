@@ -38,9 +38,10 @@ Retries on conn-error/5xx/404 with backoff up to `WEBHOOK_MAX_BUDGET_SECONDS` (d
   (the agent's login credentials). No `api_*` columns needed.
 - Sessions are cached in Redis (`gameroom_session:{game_id}`) and shared across workers. First op on
   a fresh game lazily logs in; subsequent ops reuse the JWT (TTL = expiry - 60s buffer).
-- A worker crash during RECHARGE/REDEEM does NOT retry (per-driver `_max_tries=1`). Laravel's reaper
-  fails+refunds the operation at the 10-min mark; if the gameroom call had already applied, the
-  operator reconciles via the gameroom dashboard.
+- A worker crash during RECHARGE/REDEEM: the endpoint embeds `_max_tries=1` in the payload; the
+  worker reads `ctx["job_try"]` on a retry and short-circuits with a `retry_blocked` failure
+  webhook (Laravel finalizes in seconds; reaper as fallback). The backend is never re-called. If
+  the gameroom call had already applied on the prior attempt, reconcile via the gameroom dashboard.
 - Common reasons: `gameroom:account_exists`, `gameroom:insufficient_agent_balance`,
   `gameroom:insufficient_user_balance`, `gameroom:operation_failed` (opaque, often missing player),
   `gameroom:auth_failed` (creds wrong / session can't be refreshed). Transient: `gameroom:server_error`,
@@ -56,8 +57,9 @@ Retries on conn-error/5xx/404 with backoff up to `WEBHOOK_MAX_BUDGET_SECONDS` (d
   ops reuse the token. To force re-login: `redis-cli DEL gtreasure_session:<game_id>`.
 - Mutating ops (savePlayer/enterScore) self-serialize at ≥5s spacing per game via
   `gtreasure_throttle:{game_id}` (TTL 5s, auto-expires). Reads are not throttled.
-- A worker crash during RECHARGE/REDEEM does NOT retry (per-driver `_max_tries=1`). Laravel reaper
-  fails+refunds at 10 min; if Golden Treasure had already applied, reconcile via the agent dashboard.
+- A worker crash during RECHARGE/REDEEM: same retry-blocked path as gameroom. The endpoint embeds
+  `_max_tries=1`; on retry the worker short-circuits with a `retry_blocked` failure webhook
+  (backend never re-called). If Golden Treasure had already applied, reconcile via the agent UI.
 - Common reasons: `gtreasure:account_exists`, `gtreasure:operation_refused` (over-limit /
   insufficient), `gtreasure:invalid_password_format`, `gtreasure:auth_failed` (creds wrong / session
   unrecoverable), `gtreasure:rate_limited` (transient — Laravel reaper picks up),

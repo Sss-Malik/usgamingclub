@@ -17,8 +17,10 @@ Laravel owns all money/account writes; this service reads the shared MySQL only.
   sibling games on an existing provider (e.g. `juwa`/`juwa2` share GameVault's API) are added as an
   alias in the registry.
 - Non-idempotent drivers (no server-side `order_id` dedupe — currently `gameroom`, `goldentreasure`)
-  are listed in `NON_IDEMPOTENT_DRIVERS`; the `/operations` endpoint passes arq `_max_tries=1` for
-  these so a worker crash can't double-apply funds. Reaper at Laravel's 10-min mark handles the orphan.
+  are listed in `NON_IDEMPOTENT_DRIVERS`. arq has NO `_max_tries` kwarg on `enqueue_job`, so the
+  `/operations` endpoint **embeds `_max_tries=1` inside the payload dict**; the worker reads it +
+  `ctx["job_try"]` and short-circuits with a `retry_blocked` failure webhook on the retry. Result:
+  Laravel learns of the failure in seconds (not 10 min via the reaper), the backend is never re-called.
 - Gameroom: JWT bearer auth (~6h sessions) cached in Redis via `app/backends/gameroom/session.py`.
   Re-login on `status_code:410` uses **double-checked locking** (`get_token(invalidate=...)`) to
   stay safe under Gameroom's single-session-per-agent enforcement.
