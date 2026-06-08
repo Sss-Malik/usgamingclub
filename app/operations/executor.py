@@ -25,6 +25,7 @@ async def execute_operation(
     settings: Settings,
     result_cache: ResultCache | None = None,
     session_store=None,
+    redis=None,
     resolve=_resolve_backend,
 ) -> None:
     if result_cache is None:
@@ -74,6 +75,7 @@ async def execute_operation(
             http_client=http_client,
             settings=settings,
             session_store=session_store,
+            redis=redis,
         )
     except BackendError as exc:
         await _deliver(http_client, settings, key, CachedOutcome("failed", None, exc.reason))

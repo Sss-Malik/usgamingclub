@@ -6,6 +6,7 @@ from app.backends.context import GameCredentials
 from app.backends.gameroom.backend import GameroomBackend
 from app.backends.gameroom.session import InMemorySessionStore
 from app.backends.gamevault.backend import GameVaultBackend
+from app.backends.goldentreasure.backend import GoldenTreasureBackend
 from app.backends.mock.backend import MockBackend
 from app.backends.registry import NON_IDEMPOTENT_DRIVERS, resolve_backend
 from app.config import Settings
@@ -147,9 +148,6 @@ def test_gameroom_missing_credentials_raises():
             http_client=object(), settings=s, session_store=InMemorySessionStore(),
         )
     assert ei.value.reason == "missing_gameroom_credentials"
-
-
-from app.backends.goldentreasure.backend import GoldenTreasureBackend
 
 
 def _gt_creds():

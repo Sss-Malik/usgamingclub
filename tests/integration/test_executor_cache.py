@@ -48,7 +48,7 @@ async def test_invalid_result_payload_is_cached(seeded):
         async def read_balance(self, ctx):
             return ReadBalanceResult(balance_cents=-1)  # raises ValidationError (ge=0) on construction
 
-    def fake_resolve(driver, *, credentials, http_client, settings, session_store=None):
+    def fake_resolve(driver, *, credentials, http_client, settings, session_store=None, redis=None):
         return BadBackend()
 
     payload = {"idempotency_key": "k-bad", "type": "READ_BALANCE", "user_id": 42, "game_id": 7, "game_account_id": 1001}
@@ -76,3 +76,19 @@ async def test_gameroom_without_session_store_reports_failure(seeded):
     body = route.calls.last.request.content.decode()
     assert '"status":"failed"' in body and "missing_session_store" in body
     assert await cache.get("gr-no-store") is None              # config error -> not cached
+
+
+@respx.mock
+async def test_goldentreasure_without_redis_reports_failure(seeded):
+    # Config error (no Redis injected for a gtreasure game) -> clean failure, NOT cached.
+    route = respx.post(WEBHOOK).mock(return_value=httpx.Response(200, json={"ok": True}))
+    cache = InMemoryResultCache()
+    payload = {"idempotency_key": "gt-no-redis", "type": "AGENT_BALANCE", "game_id": 13}
+    async with httpx.AsyncClient() as client:
+        await execute_operation(
+            payload, session_factory=seeded, http_client=client, settings=_settings(),
+            result_cache=cache, redis=None,
+        )
+    body = route.calls.last.request.content.decode()
+    assert '"status":"failed"' in body and "missing_redis_client" in body
+    assert await cache.get("gt-no-redis") is None        # config error -> not cached
