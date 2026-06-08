@@ -38,3 +38,22 @@ drivers route to `GameVaultBackend` with each game's own per-row `api_base_url`/
 Redis keyed by `idempotency_key` (TTL `result_cache_ttl_seconds`). The executor replays a cached outcome
 without re-calling the backend. Transient failures are NOT cached, so an arq re-run retries the backend;
 GameVault's `order_id` dedupe prevents double money movement.
+
+## Reverse-engineered backends (Gameroom)
+Gameroom (`app/backends/gameroom/`) is the first session-holding backend: form-urlencoded POST, JWT
+bearer auth with ~6h sessions, and a `{status_code, message, data?}` envelope (`status_code` is the
+real status, not HTTP). The captcha is client-side only and the server ignores it; we omit the field.
+
+**Session storage:** `RedisSessionStore` (`gameroom_session:{game_id}`) is shared across all workers
+so they reuse one JWT per game. **Login lock** (`SET NX gameroom_login:{game_id} ex=10`) serializes
+concurrent logins — important because Gameroom allows only one active session per agent. On
+`status_code:410`, `GameroomClient.get_token(invalidate=<dead_token>)` does double-checked-locking:
+if the cache already holds a different (presumably fresher) token, no login happens. This prevents
+two workers from re-logging-in simultaneously and invalidating each other's session.
+
+**Money safety on non-idempotent backends:** Gameroom has no `order_id` / dedupe. We register
+`gameroom` in `NON_IDEMPOTENT_DRIVERS` (`app/backends/registry.py`). The `/operations` endpoint
+peeks the game's driver via `GamesRepository.get_driver(game_id)` and passes arq `_max_tries=1` for
+non-idempotent drivers, so a worker crash mid-money-op cannot retry and double-apply. Laravel's
+10-min reaper marks the op failed + refunds the wallet; the operator reconciles any in-game balance
+change manually via Gameroom's dashboard.

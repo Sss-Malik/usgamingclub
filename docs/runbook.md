@@ -32,3 +32,17 @@ Retries on conn-error/5xx/404 with backoff up to `WEBHOOK_MAX_BUDGET_SECONDS` (d
   `gamevault:20:account_exists`. Transient (`12`/`14`/`21`, 5xx, timeout) are retried automatically.
 - Error reasons always carry the `gamevault:` prefix even for `juwa` games (same provider, same code
   dictionary) so logs and dashboards group by provider.
+
+## Gameroom (JWT-session reverse-engineered backend)
+- Set `games.backend_driver='gameroom'` plus `backend_url` / `backend_username` / `backend_password`
+  (the agent's login credentials). No `api_*` columns needed.
+- Sessions are cached in Redis (`gameroom_session:{game_id}`) and shared across workers. First op on
+  a fresh game lazily logs in; subsequent ops reuse the JWT (TTL = expiry - 60s buffer).
+- A worker crash during RECHARGE/REDEEM does NOT retry (per-driver `_max_tries=1`). Laravel's reaper
+  fails+refunds the operation at the 10-min mark; if the gameroom call had already applied, the
+  operator reconciles via the gameroom dashboard.
+- Common reasons: `gameroom:account_exists`, `gameroom:insufficient_agent_balance`,
+  `gameroom:insufficient_user_balance`, `gameroom:operation_failed` (opaque, often missing player),
+  `gameroom:auth_failed` (creds wrong / session can't be refreshed). Transient: `gameroom:server_error`,
+  network/5xx.
+- To force a session refresh: `redis-cli DEL gameroom_session:<game_id>`. Next op will re-login.
