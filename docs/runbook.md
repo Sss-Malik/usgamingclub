@@ -38,6 +38,10 @@ Retries on conn-error/5xx/404 with backoff up to `WEBHOOK_MAX_BUDGET_SECONDS` (d
   (the agent's login credentials). No `api_*` columns needed.
 - Sessions are cached in Redis (`gameroom_session:{game_id}`) and shared across workers. First op on
   a fresh game lazily logs in; subsequent ops reuse the JWT (TTL = expiry - 60s buffer).
+- RECHARGE and REDEEM **pre-fetch** the current player+agent balance via `agentMoney?id=<pid>` to
+  populate `available_balance` / `customer_balance`. The server validates these against its current
+  ledger and rejects mismatches (`"Available balance has changed..."`) — a stale or empty value
+  fails. One extra round-trip per money op; reads (READ_BALANCE / AGENT_BALANCE) are unaffected.
 - A worker crash during RECHARGE/REDEEM: the endpoint embeds `_max_tries=1` in the payload; the
   worker reads `ctx["job_try"]` on a retry and short-circuits with a `retry_blocked` failure
   webhook (Laravel finalizes in seconds; reaper as fallback). The backend is never re-called. If
