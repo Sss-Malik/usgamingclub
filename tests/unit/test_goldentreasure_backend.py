@@ -1,6 +1,5 @@
 # tests/unit/test_goldentreasure_backend.py
 import json
-import time
 
 import httpx
 import pytest

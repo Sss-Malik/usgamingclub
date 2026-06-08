@@ -39,8 +39,9 @@ class GoldenTreasureBackend:
     # ---- READ_BALANCE ----
 
     async def read_balance(self, ctx: BackendContext) -> ReadBalanceResult:
+        username = _require_username(ctx)
         data = await self._client.call(
-            "/api/account/getPlayerScore", {"account": ctx.account.username},
+            "/api/account/getPlayerScore", {"account": username},
         )
         return ReadBalanceResult(balance_cents=_to_cents(data.get("curScore", 0)))
 
@@ -68,11 +69,12 @@ class GoldenTreasureBackend:
     # ---- RESET_PASSWORD ----
 
     async def reset_password(self, ctx: BackendContext) -> ResetPasswordResult:
+        username = _require_username(ctx)
         pwd = generate_memorable_password()
         await self._client.call(
             "/api/account/updatePlayer",
             {
-                "account": ctx.account.username,
+                "account": username,
                 "pwd": pwd,
                 "name": "", "phone": "", "remark": "", "tel_area_code": "",
             },
@@ -86,10 +88,11 @@ class GoldenTreasureBackend:
         self, ctx: BackendContext, *,
         amount_cents: int, bonus_cents: int, total_credit_cents: int,
     ) -> RechargeResult:
+        username = _require_username(ctx)
         await self._client.call(
             "/api/account/enterScore",
             {
-                "account": ctx.account.username,
+                "account": username,
                 "score": _to_dollars(total_credit_cents),
                 "remark": "",
                 "user_type": "player",
@@ -102,11 +105,12 @@ class GoldenTreasureBackend:
     # ---- REDEEM ----
 
     async def redeem(self, ctx: BackendContext, *, amount_cents: int) -> RedeemResult:
+        username = _require_username(ctx)
         dollars = math.ceil(amount_cents / 100)
         await self._client.call(
             "/api/account/enterScore",
             {
-                "account": ctx.account.username,
+                "account": username,
                 "score": str(-dollars),               # negative score = withdraw
                 "remark": "",
                 "user_type": "player",
@@ -114,3 +118,12 @@ class GoldenTreasureBackend:
             throttle=True,
         )
         return RedeemResult()
+
+
+def _require_username(ctx: BackendContext) -> str:
+    """Defensive: preflight populates `ctx.account` for account-scoped ops, but if it didn't
+    (e.g. an op routed here directly bypassing preflight), surface a clean error rather than
+    crashing with AttributeError."""
+    if ctx.account is None or not ctx.account.username:
+        raise BackendError("gtreasure:account_required")
+    return ctx.account.username
