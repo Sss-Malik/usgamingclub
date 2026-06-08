@@ -28,6 +28,14 @@ def test_redact_is_recursive():
     assert out["creds"]["name"] == "ok"
 
 
+def test_goldentreasure_secret_fields_are_redacted():
+    # Golden Treasure: 'pwd' is the plaintext player password in savePlayer/updatePlayer bodies;
+    # 'x-token' is the per-request AES-of-session-token header. Both MUST be redacted.
+    assert {"pwd", "x-token"} <= SECRET_KEYS
+    out = redact_processor(None, None, {"pwd": "Tiger4827", "x-token": "jtSUNg..."})
+    assert out["pwd"] == "***" and out["x-token"] == "***"
+
+
 def test_configure_logging_runs_and_logger_emits(capsys):
     # Regression: configure_logging() runs on app/worker startup. A bad structlog
     # API name here would crash the service at boot even though the redaction unit

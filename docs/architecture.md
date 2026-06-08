@@ -57,3 +57,25 @@ peeks the game's driver via `GamesRepository.get_driver(game_id)` and passes arq
 non-idempotent drivers, so a worker crash mid-money-op cannot retry and double-apply. Laravel's
 10-min reaper marks the op failed + refunds the wallet; the operator reconciles any in-game balance
 change manually via Gameroom's dashboard.
+
+## Reverse-engineered backends (Golden Treasure)
+Golden Treasure (`app/backends/goldentreasure/`) is the second session-holding backend, with much
+heavier crypto than Gameroom: every body is MD5-signed (`MD5(sorted-values + stime + SECRET)`),
+login credentials are **AES-128-ECB encrypted** (key = `f"123{stime}abc"`, must match `body.stime`),
+and `x-token`/`x-time` headers are rebuilt per authenticated request (`AES(token, key=f"xtu{ms}")`,
+URL-encoded). The Cloudflare front rejects requests without a realistic browser header set, so
+`_BROWSER_HEADERS_BASE` sends `User-Agent`, `sec-ch-ua*`, `Origin`, `Referer`, `Accept-Language`.
+
+**Sessions:** `RedisSessionStore` (`gtreasure_session:{game_id}`) shared across workers. Concurrent
+tokens are allowed (no single-session enforcement) so `get_token` uses a simple lock + one cache
+re-read — no double-checked locking. On `code:-3`/`-17`/`52`, `client.call` re-logs in transparently
+and retries once; a second auth-dead code raises terminal `gtreasure:auth_failed`.
+
+**Rate limit:** `code:167` ("high frequency request") fires on bursts of `savePlayer`/`enterScore`
+with required ≥5s spacing. The client guards mutating ops with `SET NX gtreasure_throttle:{game_id}
+ex=5` (TTL = the spacing window; never released — lets the lock auto-expire). Reads bypass the
+throttle. Hitting 167 anyway surfaces as transient (not cached).
+
+**Money safety:** `goldentreasure` is in `NON_IDEMPOTENT_DRIVERS` (no `order_id`). API endpoint
+passes `_max_tries=1`; a worker crash mid-money-op is failed+refunded by Laravel's reaper, with
+manual reconcile via the agent UI.

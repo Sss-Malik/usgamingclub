@@ -100,6 +100,26 @@ async def seeded(session_factory):
                 password="x", external_user_id=None,
             )
         )
+        s.add(
+            Game(
+                id=13,
+                name="Golden Treasure",
+                active=True,
+                backend_driver="goldentreasure",
+                backend_url="https://gt.test",
+                backend_username="Test02Gd1WEB",
+                backend_password="Zaeem@1233",
+            )
+        )
+        s.add(
+            Game(id=14, name="GT NoCreds", active=True, backend_driver="goldentreasure"),
+        )
+        s.add(
+            GameAccount(
+                id=4001, user_id=61, game_id=13, username="apitest01",
+                password="x", external_user_id=None,           # gtreasure ops key on username
+            )
+        )
         await s.commit()
     return session_factory
 

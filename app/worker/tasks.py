@@ -11,4 +11,5 @@ async def execute_operation_task(ctx: dict, payload: dict) -> None:
         settings=get_settings(),
         result_cache=ctx["result_cache"],
         session_store=ctx["session_store"],
+        redis=ctx["redis_cache"],
     )

@@ -14,12 +14,14 @@ async def test_task_delegates_to_executor_with_all_resources(monkeypatch, seeded
     class FakeClient: ...
     class FakeCache: ...
     class FakeSessionStore: ...
+    class FakeRedis: ...
 
     ctx = {
         "http_client": FakeClient(),
         "session_factory": seeded,
         "result_cache": FakeCache(),
         "session_store": FakeSessionStore(),
+        "redis_cache": FakeRedis(),
     }
     payload = {"idempotency_key": "k", "type": "READ_BALANCE", "user_id": 42, "game_id": 7, "game_account_id": 1001}
     await tasks.execute_operation_task(ctx, payload)
@@ -29,3 +31,4 @@ async def test_task_delegates_to_executor_with_all_resources(monkeypatch, seeded
     assert captured["kwargs"]["session_factory"] is seeded
     assert captured["kwargs"]["result_cache"] is ctx["result_cache"]
     assert captured["kwargs"]["session_store"] is ctx["session_store"]
+    assert captured["kwargs"]["redis"] is ctx["redis_cache"]

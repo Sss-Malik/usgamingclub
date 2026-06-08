@@ -5,6 +5,9 @@ from app.backends.gameroom.backend import GameroomBackend
 from app.backends.gameroom.client import GameroomClient
 from app.backends.gamevault.backend import GameVaultBackend
 from app.backends.gamevault.client import GameVaultClient
+from app.backends.goldentreasure.backend import GoldenTreasureBackend
+from app.backends.goldentreasure.client import GoldenTreasureClient
+from app.backends.goldentreasure.session import RedisSessionStore as GTSessionStore
 from app.backends.mock.backend import MockBackend
 from app.config import Settings
 
@@ -13,7 +16,7 @@ _GAMEVAULT_PROVIDER_DRIVERS = frozenset({"gamevault", "juwa", "juwa2"})
 
 # Drivers with no server-side idempotency (no order_id/dedupe). The API endpoint passes
 # arq _max_tries=1 for these so a worker crash mid-money-op cannot double-apply funds.
-NON_IDEMPOTENT_DRIVERS: frozenset[str] = frozenset({"gameroom"})
+NON_IDEMPOTENT_DRIVERS: frozenset[str] = frozenset({"gameroom", "goldentreasure"})
 
 
 def resolve_backend(
@@ -21,12 +24,16 @@ def resolve_backend(
     credentials: GameCredentials,
     http_client,
     settings: Settings,
-    session_store=None,
+    session_store=None,                           # Phase 3 — used by gameroom
+    redis=None,                                   # Phase 4 — used by goldentreasure (throttle + own session store)
 ) -> GameBackend:
     """Resolve the backend for an operation from its game's backend_driver.
 
-    `null`/`mock` -> MockBackend; `gamevault`/`juwa`/`juwa2` -> GameVaultBackend (same provider,
-    per-game creds); `gameroom` -> GameroomBackend (requires session_store). Unknown -> BackendError.
+    `null`/`mock` -> MockBackend.
+    `gamevault`/`juwa`/`juwa2` -> GameVaultBackend (same provider, per-game creds).
+    `gameroom` -> GameroomBackend (requires session_store).
+    `goldentreasure` -> GoldenTreasureBackend (requires redis client; constructs its own SessionStore).
+    Unknown -> BackendError.
     """
     key = (driver or "mock").lower()
     if key == "mock":
@@ -54,6 +61,22 @@ def resolve_backend(
                 password=credentials.backend_password,
                 http_client=http_client,
                 session_store=session_store,
+                game_id=credentials.game_id,
+            )
+        )
+    if key == "goldentreasure":
+        if not (credentials.backend_url and credentials.backend_username and credentials.backend_password):
+            raise BackendError("missing_goldentreasure_credentials")
+        if redis is None:
+            raise BackendError("missing_redis_client")
+        return GoldenTreasureBackend(
+            GoldenTreasureClient(
+                base_url=credentials.backend_url,
+                username=credentials.backend_username,
+                password=credentials.backend_password,
+                http_client=http_client,
+                session_store=GTSessionStore(redis),
+                redis=redis,
                 game_id=credentials.game_id,
             )
         )

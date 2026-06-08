@@ -6,6 +6,7 @@ from app.backends.context import GameCredentials
 from app.backends.gameroom.backend import GameroomBackend
 from app.backends.gameroom.session import InMemorySessionStore
 from app.backends.gamevault.backend import GameVaultBackend
+from app.backends.goldentreasure.backend import GoldenTreasureBackend
 from app.backends.mock.backend import MockBackend
 from app.backends.registry import NON_IDEMPOTENT_DRIVERS, resolve_backend
 from app.config import Settings
@@ -147,3 +148,56 @@ def test_gameroom_missing_credentials_raises():
             http_client=object(), settings=s, session_store=InMemorySessionStore(),
         )
     assert ei.value.reason == "missing_gameroom_credentials"
+
+
+def _gt_creds():
+    return GameCredentials(
+        game_id=13, name="g",
+        backend_url="https://gt.test", login_page_url=None,
+        backend_username="u", backend_password="p",
+        api_base_url=None, api_agent_id=None, api_secret_key=None,
+        binding_key=None, backend_driver="goldentreasure",
+    )
+
+
+def test_non_idempotent_drivers_contains_goldentreasure():
+    assert "goldentreasure" in NON_IDEMPOTENT_DRIVERS
+    assert "gameroom" in NON_IDEMPOTENT_DRIVERS              # Phase 3
+    # gamevault family is deliberately NOT in this set (order_id dedupe makes retries safe)
+    assert {"gamevault", "juwa", "juwa2"}.isdisjoint(NON_IDEMPOTENT_DRIVERS)
+
+
+def test_goldentreasure_driver_routes_to_goldentreasure_backend(fake_redis):
+    s = _settings()
+    backend = resolve_backend(
+        "goldentreasure", credentials=_gt_creds(),
+        http_client=object(), settings=s, redis=fake_redis,
+    )
+    assert isinstance(backend, GoldenTreasureBackend)
+
+
+def test_goldentreasure_missing_credentials_raises():
+    s = _settings()
+    creds = GameCredentials(
+        game_id=13, name="g",
+        backend_url=None, login_page_url=None,
+        backend_username=None, backend_password=None,
+        api_base_url=None, api_agent_id=None, api_secret_key=None,
+        binding_key=None, backend_driver="goldentreasure",
+    )
+    with pytest.raises(BackendError) as ei:
+        resolve_backend(
+            "goldentreasure", credentials=creds,
+            http_client=object(), settings=s, redis=object(),
+        )
+    assert ei.value.reason == "missing_goldentreasure_credentials"
+
+
+def test_goldentreasure_missing_redis_raises():
+    s = _settings()
+    with pytest.raises(BackendError) as ei:
+        resolve_backend(
+            "goldentreasure", credentials=_gt_creds(),
+            http_client=object(), settings=s, redis=None,
+        )
+    assert ei.value.reason == "missing_redis_client"

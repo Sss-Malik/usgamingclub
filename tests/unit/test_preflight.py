@@ -86,3 +86,26 @@ async def test_gameroom_context_carries_credentials(seeded):
     assert ctx.credentials.backend_url == "https://gr.test"
     assert ctx.credentials.backend_username == "TestGR159"
     assert ctx.account.external_user_id == "2998032"
+
+
+async def test_goldentreasure_game_missing_credentials_raises(seeded):
+    async with seeded() as s:
+        with pytest.raises(PreflightError) as ei:
+            await build_context(
+                s, type="AGENT_BALANCE", idempotency_key="k", user_id=None,
+                game_id=14, game_account_id=None,           # game 14: gtreasure, no creds
+            )
+    assert "missing_goldentreasure_credentials" in ei.value.reason
+
+
+async def test_goldentreasure_context_carries_credentials(seeded):
+    async with seeded() as s:
+        ctx = await build_context(
+            s, type="READ_BALANCE", idempotency_key="idem-1", user_id=61,
+            game_id=13, game_account_id=4001,
+        )
+    assert ctx.credentials.backend_driver == "goldentreasure"
+    assert ctx.credentials.backend_url == "https://gt.test"
+    assert ctx.credentials.backend_username == "Test02Gd1WEB"
+    assert ctx.account.username == "apitest01"
+    assert ctx.account.external_user_id is None
