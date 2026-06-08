@@ -3,6 +3,7 @@ import httpx
 import redis.asyncio as redis_asyncio
 from arq.connections import RedisSettings
 
+from app.backends.gameroom.session import RedisSessionStore
 from app.config import get_settings, require_runtime_settings
 from app.db.engine import get_sessionmaker
 from app.logging import configure_logging
@@ -18,6 +19,7 @@ async def startup(ctx: dict) -> None:
     ctx["session_factory"] = get_sessionmaker()
     ctx["redis_cache"] = redis_asyncio.from_url(settings.redis_url)
     ctx["result_cache"] = RedisResultCache(ctx["redis_cache"])
+    ctx["session_store"] = RedisSessionStore(ctx["redis_cache"])     # shares the redis client
 
 
 async def shutdown(ctx: dict) -> None:
@@ -30,10 +32,10 @@ class WorkerSettings:
     on_startup = startup
     on_shutdown = shutdown
     redis_settings = RedisSettings.from_dsn(get_settings().redis_url)
-    # Job timeout must exceed the webhook retry budget so a still-retrying job is not killed.
+    # Default job timeout: must exceed the webhook retry budget so a still-retrying job is not killed.
     job_timeout = int(get_settings().webhook_max_budget_seconds) + 60
-    # Backstop for worker crashes. The result cache makes re-runs safe (cached terminal outcomes are
-    # replayed without re-calling the backend); transient failures are re-tried and GameVault dedupes
-    # by order_id, so money ops cannot double-apply.
+    # Default backstop for worker crashes. SAFE for idempotent drivers (GameVault family: order_id
+    # dedupe). For non-idempotent drivers (e.g. gameroom), the API endpoint passes _max_tries=1
+    # on enqueue, overriding this default per-job.
     max_tries = 3
     keep_result = 0
