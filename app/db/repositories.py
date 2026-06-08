@@ -13,6 +13,11 @@ class GamesRepository:
         stmt = select(Game).where(Game.id == game_id, Game.deleted_at.is_(None))
         return (await self.session.execute(stmt)).scalar_one_or_none()
 
+    async def get_driver(self, game_id: int) -> str | None:
+        """Read just the backend_driver column (cheap; used by the API endpoint for per-driver retry policy)."""
+        stmt = select(Game.backend_driver).where(Game.id == game_id, Game.deleted_at.is_(None))
+        return (await self.session.execute(stmt)).scalar_one_or_none()
+
 
 class GameAccountsRepository:
     def __init__(self, session: AsyncSession) -> None:

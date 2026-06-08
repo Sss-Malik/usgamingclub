@@ -7,6 +7,7 @@ from fastapi import FastAPI
 
 from app.api import health, operations
 from app.config import get_settings, require_runtime_settings
+from app.db.engine import get_sessionmaker
 from app.logging import configure_logging, get_logger
 
 
@@ -16,6 +17,7 @@ async def lifespan(app: FastAPI):
     settings = get_settings()
     require_runtime_settings(settings)
     app.state.arq = await create_pool(RedisSettings.from_dsn(settings.redis_url))
+    app.state.session_factory = get_sessionmaker()
     get_logger(__name__).info("service_started", env=settings.env)
     try:
         yield

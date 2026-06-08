@@ -13,8 +13,14 @@ Laravel owns all money/account writes; this service reads the shared MySQL only.
 - Always return `202` for a correlatable trigger; report real failures via the webhook (`status:"failed"`).
   Reserve non-`202` for bad signatures (401) and uncorrelatable bodies (400).
 - Backend selection comes from `games.backend_driver` (read-only): `mock` | `gamevault` | `juwa` |
-  `juwa2`. New backends add a module + a `resolve_backend` branch; sibling games on an existing
-  provider (e.g. `juwa`/`juwa2` share GameVault's API) are added as an alias in the registry.
+  `juwa2` | `gameroom`. New backends add a module + a `resolve_backend` branch; sibling games on an
+  existing provider (e.g. `juwa`/`juwa2` share GameVault's API) are added as an alias in the registry.
+- Non-idempotent drivers (no server-side `order_id` dedupe — currently `gameroom`) are listed in
+  `NON_IDEMPOTENT_DRIVERS`; the `/operations` endpoint passes arq `_max_tries=1` for these so a
+  worker crash can't double-apply funds. Reaper at Laravel's 10-min mark handles the orphan.
+- Gameroom: JWT bearer auth (~6h sessions) cached in Redis via `app/backends/gameroom/session.py`.
+  Re-login on `status_code:410` uses **double-checked locking** (`get_token(invalidate=...)`) to
+  stay safe under Gameroom's single-session-per-agent enforcement.
 - GameVault: amounts are sent as whole dollars via `ceil(cents/100)`; balances read as decimal dollars `*100`.
   Pass `idempotency_key` as `order_id` (GameVault dedupes). Generated passwords are memorable (word+digits).
 - Cache terminal outcomes (success + business failures) in the result cache; never cache transient errors
@@ -25,6 +31,7 @@ Laravel owns all money/account writes; this service reads the shared MySQL only.
 - Orchestration: `app/operations/executor.py` + `dispatch.py` · Worker: `app/worker/`
 - API: `app/api/` · Config: `app/config.py`
 - GameVault backend: `app/backends/gamevault/` (client, backend, errors, passwords). Result cache: `app/operations/result_cache.py`.
+- Gameroom backend: `app/backends/gameroom/` (client, backend, errors, passwords, session).
 
 ## Workflow
 - TDD: write the failing test first, then the minimal code (see `docs/superpowers/plans/`).

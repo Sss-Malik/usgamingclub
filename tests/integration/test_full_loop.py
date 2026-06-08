@@ -18,7 +18,7 @@ class CapturingArq:
         self.seeded = seeded
         self.enqueued = []
 
-    async def enqueue_job(self, func, payload, _job_id=None):
+    async def enqueue_job(self, func, payload, _job_id=None, _max_tries=None):
         self.enqueued.append((func, payload, _job_id))
 
 
