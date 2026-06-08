@@ -74,5 +74,42 @@ async def seeded(session_factory):
                 password="x", external_user_id=None,
             )
         )
+        s.add(
+            Game(
+                id=11,
+                name="Gameroom",
+                active=True,
+                backend_driver="gameroom",
+                backend_url="https://gr.test",
+                backend_username="TestGR159",
+                backend_password="TestGR1122@",
+            )
+        )
+        s.add(
+            Game(id=12, name="Gameroom NoCreds", active=True, backend_driver="gameroom"),
+        )
+        s.add(
+            GameAccount(
+                id=3001, user_id=51, game_id=11, username="apifull9983654",
+                password="x", external_user_id="2998032",
+            )
+        )
+        s.add(
+            GameAccount(
+                id=3002, user_id=52, game_id=11, username="user_no_ext",
+                password="x", external_user_id=None,
+            )
+        )
         await s.commit()
     return session_factory
+
+
+@pytest_asyncio.fixture
+async def fake_redis():
+    """In-process fake Redis (full SET NX + TTL semantics) for session-store tests."""
+    import fakeredis.aioredis as _f
+    r = _f.FakeRedis(decode_responses=False)
+    try:
+        yield r
+    finally:
+        await r.aclose()
