@@ -50,6 +50,11 @@ async def build_context(
     ):
         raise PreflightError("missing_gameroom_credentials")
 
+    if (game.backend_driver or "").lower() == "goldentreasure" and not (
+        game.backend_url and game.backend_username and game.backend_password
+    ):
+        raise PreflightError("missing_goldentreasure_credentials")
+
     account: AccountIdentity | None = None
     if type in ACCOUNT_SCOPED_TYPES:
         if game_account_id is None:
