@@ -80,11 +80,12 @@ async def test_enqueue_failure_returns_500(app):
     assert resp.status_code == 500
 
 
-async def test_idempotent_driver_uses_default_max_tries(monkeypatch, seeded, app):
-    # Wire a real session_factory so the endpoint can peek the driver.
+async def test_idempotent_driver_uses_default_max_tries(seeded, app):
+    # Wire a real session_factory + a gamevault game (id=9 in conftest seed) so the endpoint's
+    # driver peek actually runs and confirms gamevault is NOT in NON_IDEMPOTENT_DRIVERS.
     app.state.session_factory = seeded
     body = json.dumps(
-        {"idempotency_key": "gv-1", "type": "READ_BALANCE", "user_id": 42, "game_id": 7, "game_account_id": 1001},
+        {"idempotency_key": "gv-1", "type": "READ_BALANCE", "user_id": 43, "game_id": 9, "game_account_id": 2001},
         separators=(",", ":"),
     )
     headers = sign("s", body)
@@ -98,7 +99,8 @@ async def test_idempotent_driver_uses_default_max_tries(monkeypatch, seeded, app
     async with await _client(app) as c:
         resp = await c.post("/operations", content=body, headers=headers)
     assert resp.status_code == 202
-    assert app.state.arq.jobs[0]["_max_tries"] is None or app.state.arq.jobs[0]["_max_tries"] == 3
+    # gamevault driver -> endpoint leaves _max_tries at None so arq uses WorkerSettings.max_tries (3).
+    assert app.state.arq.jobs[0]["_max_tries"] is None
 
 
 async def test_gameroom_driver_uses_max_tries_1(seeded, app):

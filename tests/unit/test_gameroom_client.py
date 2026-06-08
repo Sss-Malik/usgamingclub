@@ -189,3 +189,53 @@ async def test_call_transport_error_is_transient():
     async with httpx.AsyncClient() as http:
         with pytest.raises(TransientBackendError):
             await _client(http).call("POST", "/api/agent/getMoney")
+
+
+# --- call_raw ---
+
+@respx.mock
+async def test_call_raw_success_returns_full_envelope_with_list_data():
+    # call_raw exists for endpoints whose `data` is a list (e.g. userList); call() unwraps dict data
+    # only, so list-data callers must use call_raw to access the rows.
+    respx.post(f"{BASE}/api/login").mock(return_value=httpx.Response(200, json=_login_ok("T")))
+    respx.get(f"{BASE}/api/player/userList").mock(return_value=httpx.Response(
+        200, json={"code": 0, "status_code": 200, "message": "Query successful",
+                   "count": 1, "data": [{"id": 1, "Account": "x"}]}))
+    async with httpx.AsyncClient() as http:
+        envelope = await _client(http).call_raw("GET", "/api/player/userList", params={"account": "x"})
+    assert envelope["status_code"] == 200
+    assert envelope["data"] == [{"id": 1, "Account": "x"}]
+
+
+@respx.mock
+async def test_call_raw_transient_500_raises_not_returns():
+    # Regression for the call_raw misclassification bug: a transient server error from a userList
+    # lookup must surface as TransientBackendError (not silently passed back as an envelope so the
+    # caller misclassifies it as terminal 'player_not_found').
+    respx.post(f"{BASE}/api/login").mock(return_value=httpx.Response(200, json=_login_ok("T")))
+    respx.get(f"{BASE}/api/player/userList").mock(return_value=httpx.Response(
+        200, json={"status_code": 500, "message": "Service exception"}))
+    async with httpx.AsyncClient() as http:
+        with pytest.raises(TransientBackendError):
+            await _client(http).call_raw("GET", "/api/player/userList", params={"account": "x"})
+
+
+@respx.mock
+async def test_call_raw_business_400_raises_terminal():
+    respx.post(f"{BASE}/api/login").mock(return_value=httpx.Response(200, json=_login_ok("T")))
+    respx.get(f"{BASE}/api/player/userList").mock(return_value=httpx.Response(
+        200, json={"status_code": 400, "message": "Operation failed"}))
+    async with httpx.AsyncClient() as http:
+        with pytest.raises(BackendError) as ei:
+            await _client(http).call_raw("GET", "/api/player/userList", params={"account": "x"})
+    assert ei.value.reason == "gameroom:operation_failed"
+    assert not isinstance(ei.value, TransientBackendError)
+
+
+@respx.mock
+async def test_call_raw_http_5xx_is_transient():
+    respx.post(f"{BASE}/api/login").mock(return_value=httpx.Response(200, json=_login_ok("T")))
+    respx.get(f"{BASE}/api/player/userList").mock(return_value=httpx.Response(503))
+    async with httpx.AsyncClient() as http:
+        with pytest.raises(TransientBackendError):
+            await _client(http).call_raw("GET", "/api/player/userList", params={"account": "x"})

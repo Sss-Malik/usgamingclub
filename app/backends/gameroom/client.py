@@ -104,10 +104,16 @@ class GameroomClient:
             resp = await self._http_request(method, path, fresh, fields=fields, params=params)
             if self._is_410(resp):
                 raise BackendError("gameroom:auth_failed")
-        try:
-            return resp.json()
-        except ValueError as exc:
-            raise TransientBackendError("gameroom:bad_response") from exc
+        # Same HTTP + envelope error classification as call(); only difference is we return the
+        # full envelope on success (so callers can read `data` even when it's a list, e.g. userList).
+        body = self._parse_or_raise(resp)
+        sc = body.get("status_code")
+        if sc == 200:
+            return body
+        reason, terminal = map_response(int(sc) if isinstance(sc, int) else 0, str(body.get("message", "")))
+        if not terminal:
+            raise TransientBackendError(reason)
+        raise BackendError(reason)
 
     async def _http_request(self, method: str, path: str, token: str, *,
                             fields=None, params=None) -> httpx.Response:
@@ -126,15 +132,19 @@ class GameroomClient:
         except httpx.HTTPError as exc:
             raise TransientBackendError(f"gameroom:transport:{type(exc).__name__}") from exc
 
-    def _classify(self, resp: httpx.Response) -> dict:
+    def _parse_or_raise(self, resp: httpx.Response) -> dict:
+        """HTTP-status check + JSON parse; raise Transient/BackendError on the wrong shapes."""
         if resp.status_code >= 500:
             raise TransientBackendError(f"gameroom:http_{resp.status_code}")
-        if resp.status_code >= 300 and resp.status_code != 200:
+        if resp.status_code >= 300:
             raise BackendError(f"gameroom:http_{resp.status_code}")
         try:
-            body = resp.json()
+            return resp.json()
         except ValueError as exc:
             raise TransientBackendError("gameroom:bad_response") from exc
+
+    def _classify(self, resp: httpx.Response) -> dict:
+        body = self._parse_or_raise(resp)
         sc = body.get("status_code")
         if sc == 200:
             # `data` may be missing (e.g. agentWithdraw success). Top-level keys (token, money, etc.)
