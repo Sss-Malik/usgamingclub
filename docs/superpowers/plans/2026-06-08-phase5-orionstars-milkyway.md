@@ -1907,8 +1907,11 @@ Append to `app/backends/_aspnet_cashier/client.py`:
                 raise TransientBackendError(f"{self._driver}:session_dead_after_relogin")
         if resp.status_code >= 500:
             raise TransientBackendError(f"{self._driver}:http_{resp.status_code}")
-        if resp.status_code >= 400 and resp.status_code != 301:
-            raise BackendError(f"{self._driver}:http_{resp.status_code}")
+        if resp.status_code >= 400:
+            # 4xx that wasn't a recognized dead-session symptom (handled above) is treated as
+            # transient: most are momentary (Cloudflare blip, rate limit, brief auth glitch).
+            # Letting Laravel retry beats burning the op on a recoverable error.
+            raise TransientBackendError(f"{self._driver}:http_{resp.status_code}")
         return resp.text
 
     async def _do_request(

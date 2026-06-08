@@ -255,3 +255,24 @@ async def test_fetch_agent_balance_widget_returns_int_cents():
         c = _client(http, store=store)
         bal = await c.fetch_agent_balance_dollars()
     assert bal == 42
+
+
+@respx.mock
+async def test_request_text_4xx_is_transient_not_terminal():
+    """4xx responses that weren't recognized as session-death should be retryable.
+
+    Cloudflare blips, momentary rate limits, and brief auth glitches all surface as 4xx
+    on these portals; classifying them as terminal would burn the op. The design doc's
+    session-death table pins 'Other 4xx' as transient.
+    """
+    store = InMemoryCookieSessionStore()
+    await store.set(42, CachedSession(cookie="C", expires_at=int(time.time()) + 3600),
+                    ttl_seconds=3600)
+    respx.post(f"{BASE}/Module/AccountManager/AccountsList.aspx").mock(
+        return_value=httpx.Response(429, text="Too Many Requests"),
+    )
+    async with httpx.AsyncClient(base_url=BASE) as http:
+        c = _client(http, store=store)
+        with pytest.raises(TransientBackendError, match="http_429"):
+            await c.request_text("POST", "/Module/AccountManager/AccountsList.aspx",
+                                 form={"x": "1"})
