@@ -98,7 +98,7 @@ class OrionStarsBackend:
     async def create_account(self, ctx: BackendContext) -> CreateAccountResult:
         username = ctx.account_username
         if not username:
-            raise BackendError("orionstars:account_username_required")
+            raise BackendError(f"{self._client._driver}:account_username_required")
         pwd = generate_aspnet_password()
         time_q = _now_query_param()
         # GET the form to scrape viewstate (CreateAccount has EnableEventValidation=true).
@@ -128,7 +128,7 @@ class OrionStarsBackend:
         # Follow-up search to obtain UID:GID for the new account.
         pairs = await self._client.search_account(username)
         if not pairs:
-            raise BackendError("orionstars:create_followup_search_no_rows")
+            raise BackendError(f"{self._client._driver}:create_followup_search_no_rows")
         uid, gid = pairs[0]
         return CreateAccountResult(
             username=username, password=pwd, external_user_id=f"{uid}:{gid}",
@@ -145,5 +145,5 @@ class OrionStarsBackend:
             pairs = await self._client.search_account(ctx.account.username)
             if pairs:
                 return pairs[0]
-            raise BackendError("orionstars:player_not_found")
-        raise BackendError("orionstars:player_not_found")
+            raise BackendError(f"{self._client._driver}:player_not_found")
+        raise BackendError(f"{self._client._driver}:player_not_found")
