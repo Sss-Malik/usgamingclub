@@ -24,6 +24,7 @@ async def execute_operation(
     http_client: httpx.AsyncClient,
     settings: Settings,
     result_cache: ResultCache | None = None,
+    session_store=None,
     resolve=_resolve_backend,
 ) -> None:
     if result_cache is None:
@@ -68,7 +69,11 @@ async def execute_operation(
     # 4. Resolve backend (config error -> failure, not cached).
     try:
         backend: GameBackend = resolve(
-            ctx.credentials.backend_driver, credentials=ctx.credentials, http_client=http_client, settings=settings
+            ctx.credentials.backend_driver,
+            credentials=ctx.credentials,
+            http_client=http_client,
+            settings=settings,
+            session_store=session_store,
         )
     except BackendError as exc:
         await _deliver(http_client, settings, key, CachedOutcome("failed", None, exc.reason))

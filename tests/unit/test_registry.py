@@ -3,9 +3,11 @@ import pytest
 
 from app.backends.base import BackendError
 from app.backends.context import GameCredentials
+from app.backends.gameroom.backend import GameroomBackend
+from app.backends.gameroom.session import InMemorySessionStore
 from app.backends.gamevault.backend import GameVaultBackend
 from app.backends.mock.backend import MockBackend
-from app.backends.registry import resolve_backend
+from app.backends.registry import NON_IDEMPOTENT_DRIVERS, resolve_backend
 from app.config import Settings
 
 
@@ -95,11 +97,6 @@ def test_juwa2_missing_credentials_raises_same_reason():
     assert ei.value.reason == "missing_gamevault_credentials"
 
 
-from app.backends.gameroom.backend import GameroomBackend
-from app.backends.gameroom.session import InMemorySessionStore
-from app.backends.registry import NON_IDEMPOTENT_DRIVERS, resolve_backend as resolve
-
-
 def _gameroom_creds():
     return GameCredentials(
         game_id=11, name="g",
@@ -118,7 +115,7 @@ def test_non_idempotent_drivers_contains_gameroom():
 
 def test_gameroom_driver_routes_to_gameroom_backend():
     s = _settings()
-    backend = resolve(
+    backend = resolve_backend(
         "gameroom", credentials=_gameroom_creds(),
         http_client=object(), settings=s, session_store=InMemorySessionStore(),
     )
@@ -128,7 +125,7 @@ def test_gameroom_driver_routes_to_gameroom_backend():
 def test_gameroom_missing_session_store_raises():
     s = _settings()
     with pytest.raises(BackendError) as ei:
-        resolve(
+        resolve_backend(
             "gameroom", credentials=_gameroom_creds(),
             http_client=object(), settings=s, session_store=None,
         )
@@ -145,7 +142,7 @@ def test_gameroom_missing_credentials_raises():
         binding_key=None, backend_driver="gameroom",
     )
     with pytest.raises(BackendError) as ei:
-        resolve(
+        resolve_backend(
             "gameroom", credentials=creds,
             http_client=object(), settings=s, session_store=InMemorySessionStore(),
         )
