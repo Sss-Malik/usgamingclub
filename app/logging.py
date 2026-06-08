@@ -8,6 +8,7 @@ from app.config import get_settings
 
 SECRET_KEYS = {
     "password",
+    "pwd",                  # Golden Treasure: plaintext player password in savePlayer/updatePlayer bodies
     "login_pwd",
     "backend_password",
     "api_secret_key",
@@ -15,6 +16,7 @@ SECRET_KEYS = {
     "secret",
     "token",
     "x-signature",
+    "x-token",              # Golden Treasure: AES of session token; per-request rebuild
 }
 
 

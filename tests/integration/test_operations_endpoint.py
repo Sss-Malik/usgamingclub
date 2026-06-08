@@ -123,6 +123,29 @@ async def test_gameroom_driver_uses_max_tries_1(seeded, app):
     assert app.state.arq.jobs[0]["_max_tries"] == 1
 
 
+async def test_goldentreasure_driver_uses_max_tries_1(seeded, app):
+    # Same safety property as gameroom: a non-idempotent driver gets _max_tries=1 so a worker
+    # crash mid-money-op cannot retry and double-apply. Explicit endpoint-level test (the registry
+    # set membership test isn't enough — guards against future regressions of the endpoint logic).
+    app.state.session_factory = seeded
+    body = json.dumps(
+        {"idempotency_key": "gt-mt-1", "type": "AGENT_BALANCE", "game_id": 13},
+        separators=(",", ":"),
+    )
+    headers = sign("s", body)
+
+    class CapturingArq:
+        def __init__(self): self.jobs = []
+        async def enqueue_job(self, func, payload, _job_id=None, _max_tries=None):
+            self.jobs.append({"_max_tries": _max_tries})
+    app.state.arq = CapturingArq()
+
+    async with await _client(app) as c:
+        resp = await c.post("/operations", content=body, headers=headers)
+    assert resp.status_code == 202
+    assert app.state.arq.jobs[0]["_max_tries"] == 1
+
+
 async def test_unknown_game_id_falls_back_to_default(seeded, app):
     app.state.session_factory = seeded
     body = json.dumps(

@@ -54,6 +54,19 @@ def test_sign_body_save_player_oracle_verifies_empty_skip_and_sort():
     assert sign == "2fb7d0fb23cce1d967f095352b5bfa3f"
 
 
+def test_sign_body_login_oracle():
+    # findings §3 login row — exercises sign_body with the actual AES-encrypted credentials
+    # from §4 (oracle for the most sensitive operation; complements savePlayer's empty-skip test).
+    body = {
+        "username": "BXrmQgZgqwThh5+CjFOLFA==",       # §4 oracle: aes_b64("Test02Gd1WEB", "1231779281935abc")
+        "password": "suyUHuDw+rXOKpJvvW7WsA==",       # §4 oracle: aes_b64("Zaeem@1233", "1231779281935abc")
+        "auth_code": "",                              # skipped (empty)
+        "stime": 1779281935,                          # the key itself is skipped; appended as suffix
+    }
+    sign, _ = sign_body(body, stime=1779281935)
+    assert sign == "70dd125c4171014b72161de33ab3791f"
+
+
 def test_sign_body_skips_none_and_stime_key_itself():
     # `stime` key in the body must be skipped during concat (it's appended as a suffix).
     # `None` values must also be skipped.
