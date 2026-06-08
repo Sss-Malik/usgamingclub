@@ -2,7 +2,7 @@ import asyncio
 import os
 import tempfile
 
-from anticaptchaofficial.imagecaptcha import imagecaptcha  # noqa: F401 (re-imported by tests)
+from anticaptchaofficial.imagecaptcha import imagecaptcha
 
 from app.backends.base import TransientBackendError
 

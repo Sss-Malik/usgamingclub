@@ -68,3 +68,20 @@ async def test_solve_writes_then_removes_temp_file(fake_solver_class, tmp_path, 
     await solver.solve_numeric_image(b"PAYLOAD")
     # Tempfile was removed after solve
     assert written_paths and not any(__import__("os").path.exists(p) for p in written_paths)
+
+
+async def test_solve_unlinks_tempfile_when_solver_raises(fake_solver_class):
+    """If the upstream library raises mid-solve, the finally clause still cleans up the tempfile."""
+    import os as _os
+    _, instance = fake_solver_class
+    captured: list[str] = []
+
+    def boom(path: str):
+        captured.append(path)
+        raise RuntimeError("upstream boom")
+
+    instance.solve_and_return_solution.side_effect = boom
+    solver = AntiCaptchaSolver(api_key="k")
+    with pytest.raises(RuntimeError, match="upstream boom"):
+        await solver.solve_numeric_image(b"x")
+    assert captured and not _os.path.exists(captured[0])
