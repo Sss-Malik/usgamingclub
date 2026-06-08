@@ -154,3 +154,104 @@ async def test_request_does_not_retry_more_than_once_on_repeated_500():
         with pytest.raises(TransientBackendError):
             await c.request_text("POST", "/Module/AccountManager/AccountsList.aspx",
                                  form={"getscoreuserid": "1"})
+
+
+# --- op-facing helpers ---
+
+_ACCOUNTS_LIST_HTML = """
+<form id="form1">
+  <input type="hidden" name="__VIEWSTATE" value="ALV" />
+  <input type="hidden" name="__VIEWSTATEGENERATOR" value="CF7AEB79" />
+  <div class="nav">Balance:42</div>
+  <table>
+    <tr><td><a onclick="updateSelect( '21041615,21219386')">Update</a></td></tr>
+  </table>
+</form>
+"""
+
+_DIALOG_HTML = """
+<form id="form1">
+  <input type="hidden" name="__VIEWSTATE" value="DLG" />
+  <input type="hidden" name="__VIEWSTATEGENERATOR" value="DB3B1D51" />
+  <input type="hidden" name="__EVENTVALIDATION" value="DLEV" />
+</form>
+"""
+
+
+@respx.mock
+async def test_search_returns_uid_gid_pairs():
+    store = InMemoryCookieSessionStore()
+    await store.set(42, CachedSession(cookie="C", expires_at=int(time.time()) + 3600), ttl_seconds=3600)
+    respx.get(f"{BASE}/Module/AccountManager/AccountsList.aspx").mock(
+        return_value=httpx.Response(200, text=_ACCOUNTS_LIST_HTML)
+    )
+    route = respx.post(f"{BASE}/Module/AccountManager/AccountsList.aspx").mock(
+        return_value=httpx.Response(200, text=_ACCOUNTS_LIST_HTML)
+    )
+    async with httpx.AsyncClient(base_url=BASE) as http:
+        c = _client(http, store=store)
+        pairs = await c.search_account("Saud_Doe892")
+    assert pairs == [("21041615", "21219386")]
+    body = route.calls.last.request.content.decode()
+    assert "__EVENTTARGET=ctl16" in body
+    assert "txtSearch=Saud_Doe892" in body
+    assert "ShowHideAccount=1" in body
+    assert "__VIEWSTATE=ALV" in body
+    assert "__EVENTVALIDATION" not in body                 # AccountsList: EnableEventValidation=false
+
+
+@respx.mock
+async def test_get_dialog_url_returns_url_and_token():
+    store = InMemoryCookieSessionStore()
+    await store.set(42, CachedSession(cookie="C", expires_at=int(time.time()) + 3600), ttl_seconds=3600)
+    respx.post(f"{BASE}/Module/AccountManager/AccountsList.aspx").mock(
+        return_value=httpx.Response(
+            200,
+            text="Module/AccountManager/GrantTreasure.aspx?param=TOKENAAAA|<html/>",
+        )
+    )
+    async with httpx.AsyncClient(base_url=BASE) as http:
+        c = _client(http, store=store)
+        url, token = await c.get_dialog_url(tourl=0, uid="21041615", gid="21219386")
+    assert url == "Module/AccountManager/GrantTreasure.aspx?param=TOKENAAAA"
+    assert token == "TOKENAAAA"
+
+
+@respx.mock
+async def test_submit_dialog_get_then_post_uses_scraped_viewstate():
+    store = InMemoryCookieSessionStore()
+    await store.set(42, CachedSession(cookie="C", expires_at=int(time.time()) + 3600), ttl_seconds=3600)
+    respx.get(f"{BASE}/Module/AccountManager/GrantTreasure.aspx?param=TOKEN").mock(
+        return_value=httpx.Response(200, text=_DIALOG_HTML)
+    )
+    route = respx.post(f"{BASE}/Module/AccountManager/GrantTreasure.aspx?param=TOKEN").mock(
+        return_value=httpx.Response(
+            200,
+            text='<script>showAlter("Confirmed successful","Balance:30");</script>',
+        )
+    )
+    async with httpx.AsyncClient(base_url=BASE) as http:
+        c = _client(http, store=store)
+        text = await c.submit_dialog(
+            dialog_url="Module/AccountManager/GrantTreasure.aspx?param=TOKEN",
+            extra_fields={"txtAddGold": "1", "txtReason": ""},
+        )
+    assert "Confirmed successful" in text
+    body = route.calls.last.request.content.decode()
+    assert "__EVENTTARGET=Button1" in body
+    assert "__VIEWSTATE=DLG" in body
+    assert "__EVENTVALIDATION=DLEV" in body
+    assert "txtAddGold=1" in body
+
+
+@respx.mock
+async def test_fetch_agent_balance_widget_returns_int_cents():
+    store = InMemoryCookieSessionStore()
+    await store.set(42, CachedSession(cookie="C", expires_at=int(time.time()) + 3600), ttl_seconds=3600)
+    respx.get(f"{BASE}/Module/AccountManager/AccountsList.aspx").mock(
+        return_value=httpx.Response(200, text=_ACCOUNTS_LIST_HTML)
+    )
+    async with httpx.AsyncClient(base_url=BASE) as http:
+        c = _client(http, store=store)
+        bal = await c.fetch_agent_balance_dollars()
+    assert bal == 42

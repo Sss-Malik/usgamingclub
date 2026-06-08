@@ -1,4 +1,5 @@
 import time
+from collections.abc import Mapping
 from urllib.parse import urlencode
 
 import httpx
@@ -95,8 +96,8 @@ class AspnetCashierClient:
 
     async def request_text(
         self, method: str, path: str, *,
-        form: dict[str, str | int] | None = None,
-        params: dict[str, str | int] | None = None,
+        form: Mapping[str, str | int] | None = None,
+        params: Mapping[str, str | int] | None = None,
     ) -> str:
         """One module-page request with cookie + Accept-Language. Retries exactly once
         if the response indicates a dead session (500 NRE, or 200 returning the login page).
@@ -119,18 +120,18 @@ class AspnetCashierClient:
 
     async def _do_request(
         self, method: str, path: str, cookie: str, *,
-        form: dict[str, str | int] | None = None,
-        params: dict[str, str | int] | None = None,
+        form: Mapping[str, str | int] | None = None,
+        params: Mapping[str, str | int] | None = None,
     ) -> httpx.Response:
         url = f"{self._base}{path}" if path.startswith("/") else f"{self._base}/{path}"
         headers = {**_BASE_HEADERS}
         cookies = {_SESSION_COOKIE: cookie}
         try:
             if method == "GET":
-                return await self._http.get(
-                    url, params=_str_map(params or {}), headers=headers, cookies=cookies,
-                    follow_redirects=False,
-                )
+                get_kwargs: dict = {"headers": headers, "cookies": cookies, "follow_redirects": False}
+                if params:
+                    get_kwargs["params"] = _str_map(params)
+                return await self._http.get(url, **get_kwargs)
             headers["Content-Type"] = _FORM_CT
             body = urlencode(_str_map(form or {})).encode()
             return await self._http.post(
@@ -150,6 +151,116 @@ class AspnetCashierClient:
             return True
         return False
 
+    # ---- op-facing helpers ----
 
-def _str_map(d: dict) -> dict[str, str]:
+    async def fetch_accounts_list_html(self) -> str:
+        """Authenticated GET of the workhorse panel. Used by agent_balance + search bootstrap."""
+        return await self.request_text("GET", "/Module/AccountManager/AccountsList.aspx",
+                                       params={"timestamp": str(int(time.time()))})
+
+    async def search_account(self, query: str) -> list[tuple[str, str]]:
+        """Run the ctl16 search and return all (uid, gid) pairs from the result HTML.
+
+        `query` matches against both GameID and Account (server-side `LIKE 'x%'` per §4.8 SQL).
+        """
+        # First GET the page to scrape viewstate (AccountsList has no __EVENTVALIDATION).
+        html = await self.fetch_accounts_list_html()
+        vs = parse_viewstate(html)
+        body = await self.request_text(
+            "POST", "/Module/AccountManager/AccountsList.aspx",
+            form={
+                "__EVENTTARGET": "ctl16",
+                "__EVENTARGUMENT": "",
+                "__VIEWSTATE": vs.viewstate,
+                "__VIEWSTATEGENERATOR": vs.viewstate_generator,
+                "__SCROLLPOSITIONX": "0",
+                "__SCROLLPOSITIONY": "0",
+                "txtSearch": query,
+                "ShowHideAccount": "1",
+            },
+        )
+        return parse_update_select(body)
+
+    async def get_dialog_url(self, *, tourl: int, uid: str, gid: str) -> tuple[str, str]:
+        """POST the tourl handshake; returns (dialog_url, param_token)."""
+        body = await self.request_text(
+            "POST", "/Module/AccountManager/AccountsList.aspx",
+            form={"tourl": str(tourl), "getpassuid": uid, "getpassgid": gid},
+        )
+        return parse_dialog_response(body)
+
+    async def submit_dialog(
+        self, *, dialog_url: str, extra_fields: dict[str, str],
+    ) -> str:
+        """GET the dialog page (scraping viewstate + __EVENTVALIDATION), then POST the action.
+
+        `extra_fields` is the op-specific payload (txtAddGold/txtReason for money ops,
+        txtConfirmPass/txtSureConfirmPass for reset). Returns the POST response text.
+        """
+        path = dialog_url if dialog_url.startswith("/") else "/" + dialog_url
+        get_body = await self.request_text("GET", path)
+        vs = parse_viewstate(get_body)
+        form: dict[str, str] = {
+            "__EVENTTARGET": "Button1",
+            "__EVENTARGUMENT": "",
+            "__VIEWSTATE": vs.viewstate,
+            "__VIEWSTATEGENERATOR": vs.viewstate_generator,
+        }
+        if vs.event_validation is not None:
+            form["__EVENTVALIDATION"] = vs.event_validation
+        form.update(extra_fields)
+        return await self.request_text("POST", path, form=form)
+
+    async def fetch_agent_balance_dollars(self) -> int:
+        """Read the agent's `Balance:NN` widget from AccountsList.aspx. Returns whole dollars."""
+        html = await self.fetch_accounts_list_html()
+        return parse_agent_balance_widget(html)
+
+    async def post_getscoreuserid(self, uid: str) -> tuple[str, str]:
+        """OrionStars-only: read player credit & total-win via the getscoreuserid POST."""
+        body = await self.request_text(
+            "POST", "/Module/AccountManager/AccountsList.aspx",
+            form={"getscoreuserid": uid},
+        )
+        return parse_get_score_response(body)
+
+    async def milkyway_read_balance(self, *, query: str) -> str:
+        """MilkyWay-only: search and parse the Balance column from the matching row.
+
+        `query` is the account name or the GameID — either matches the LIKE clause; for cached
+        callers GameID is preferred (more selective).
+        """
+        html = await self.fetch_accounts_list_html()
+        vs = parse_viewstate(html)
+        body = await self.request_text(
+            "POST", "/Module/AccountManager/AccountsList.aspx",
+            form={
+                "__EVENTTARGET": "ctl16",
+                "__EVENTARGUMENT": "",
+                "__VIEWSTATE": vs.viewstate,
+                "__VIEWSTATEGENERATOR": vs.viewstate_generator,
+                "__SCROLLPOSITIONX": "0",
+                "__SCROLLPOSITIONY": "0",
+                "txtSearch": query,
+                "ShowHideAccount": "1",
+            },
+        )
+        return parse_milkyway_balance_row(body, account=query)
+
+    # ---- sentinel helper used by ops ----
+
+    def classify(self, html: str) -> tuple[str, list[str]]:
+        """Returns (kind, args). Raises BackendError on `kind == 'unknown'`."""
+        kind, args = parse_sentinel(html)
+        if kind == "unknown":
+            raise BackendError(f"{self._driver}:unknown_sentinel:{html[:80]!r}")
+        return kind, args
+
+    def business_failure_to_error(self, message: str) -> BackendError:
+        """Map a business-failure sentinel message to a driver-prefixed BackendError."""
+        slug = classify_business_failure_message(message)
+        return BackendError(f"{self._driver}:{slug}")
+
+
+def _str_map(d: Mapping) -> dict[str, str]:
     return {k: ("" if v is None else str(v)) for k, v in d.items()}
