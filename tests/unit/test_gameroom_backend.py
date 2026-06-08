@@ -159,11 +159,21 @@ async def test_create_account_requires_account_username():
     assert ei.value.reason == "account_username_required"
 
 
+def _mock_agent_money(agent="10.00", player=5):
+    """Mock the agentMoney pre-fetch that recharge/redeem call before mutating ops."""
+    respx.get(f"{BASE}/api/player/agentMoney").mock(return_value=httpx.Response(
+        200, json={"status_code": 200, "message": "ok",
+                   "data": {"username": "apifull9983654", "balance": player, "cusBlance": agent}}))
+
+
 # ---- RECHARGE ----
 
 @respx.mock
-async def test_recharge_sends_integer_dollars_and_empty_snapshot_and_remark():
+async def test_recharge_sends_integer_dollars_with_fresh_agent_snapshot():
+    # Server rejects stale/empty `available_balance` with "Available balance has changed".
+    # We pre-fetch via agentMoney and pass cusBlance verbatim.
     _mock_login()
+    _mock_agent_money(agent="10.00")
     route = respx.post(f"{BASE}/api/player/agentRecharge").mock(return_value=httpx.Response(
         200, json={"status_code": 200, "message": "Recharge successful",
                    "data": {"balance": "1", "bonus": 0, "remark": "", "total_balance": "1.00"}}))
@@ -171,7 +181,7 @@ async def test_recharge_sends_integer_dollars_and_empty_snapshot_and_remark():
         r = await _backend(http).recharge(_ctx(), amount_cents=5000, bonus_cents=500, total_credit_cents=5510)
     body = route.calls.last.request.content.decode()
     assert "id=2998032" in body
-    assert "available_balance=" in body and "available_balance=&" in (body + "&")   # empty
+    assert "available_balance=10.00" in body                                        # fresh from agentMoney
     assert "opera_type=0" in body
     assert "bonus=0" in body
     assert "balance=56" in body                                                     # ceil(5510/100)
@@ -182,15 +192,16 @@ async def test_recharge_sends_integer_dollars_and_empty_snapshot_and_remark():
 # ---- REDEEM ----
 
 @respx.mock
-async def test_redeem_succeeds_with_no_data_block():
+async def test_redeem_sends_fresh_player_snapshot_succeeds_with_no_data_block():
     _mock_login()
+    _mock_agent_money(player=7)
     route = respx.post(f"{BASE}/api/player/agentWithdraw").mock(return_value=httpx.Response(
         200, json={"status_code": 200, "message": "Withdraw successful"}))
     async with httpx.AsyncClient() as http:
         r = await _backend(http).redeem(_ctx(), amount_cents=3050)
     body = route.calls.last.request.content.decode()
     assert "id=2998032" in body
-    assert "customer_balance=" in body and "customer_balance=&" in (body + "&")
+    assert "customer_balance=7" in body                                             # fresh from agentMoney
     assert "opera_type=1" in body
     assert "balance=31" in body                                                     # ceil(3050/100)
     assert r.balance_cents is None                                                  # response has no data
@@ -199,6 +210,7 @@ async def test_redeem_succeeds_with_no_data_block():
 @respx.mock
 async def test_redeem_insufficient_user_balance_is_terminal():
     _mock_login()
+    _mock_agent_money()                                                             # pre-fetch happens before withdraw
     respx.post(f"{BASE}/api/player/agentWithdraw").mock(return_value=httpx.Response(
         200, json={"status_code": 400,
                    "message": "Withdrawal amount is greater than customer balance. Please check and withdraw again"}))
@@ -206,6 +218,22 @@ async def test_redeem_insufficient_user_balance_is_terminal():
         with pytest.raises(BackendError) as ei:
             await _backend(http).redeem(_ctx(), amount_cents=100)
     assert ei.value.reason == "gameroom:insufficient_user_balance"
+
+
+@respx.mock
+async def test_recharge_available_balance_changed_is_terminal_business_error():
+    # Even with fresh pre-fetch, a concurrent op could change the agent balance between
+    # agentMoney and agentRecharge. Confirm the failure surfaces cleanly as terminal.
+    _mock_login()
+    _mock_agent_money(agent="10.00")
+    respx.post(f"{BASE}/api/player/agentRecharge").mock(return_value=httpx.Response(
+        200, json={"status_code": 400,
+                   "message": "Available balance has changed. Please refresh and recharge again"}))
+    async with httpx.AsyncClient() as http:
+        with pytest.raises(BackendError) as ei:
+            await _backend(http).recharge(_ctx(), amount_cents=100, bonus_cents=0, total_credit_cents=100)
+    assert "Available balance has changed" in ei.value.reason
+    assert ei.value.reason.startswith("gameroom:business_error:")
 
 
 # ---- RESET_PASSWORD ----

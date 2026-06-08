@@ -70,14 +70,17 @@ class GameroomBackend:
         amount_cents: int, bonus_cents: int, total_credit_cents: int,
     ) -> RechargeResult:
         pid = await self._player_id(ctx)
-        # available_balance: server ignores the value but the field is required (empty OK).
+        # Pre-fetch the current agent balance: the server rejects a stale or empty
+        # `available_balance` with "Available balance has changed. Please refresh and recharge again."
+        # (Verified in production; the findings doc's "value can be stale" note was wrong.)
+        snapshot = await self._agent_money(pid)
         # bonus=0: we already credit `total_credit_cents` via balance; bonus is on top per the doc.
         # remark="": UUIDs have hyphens which fail [A-Za-z0-9]; empty is allowed.
         data = await self._client.call(
             "POST", "/api/player/agentRecharge",
             fields={
                 "id": pid,
-                "available_balance": "",
+                "available_balance": str(snapshot.get("cusBlance", "")),
                 "opera_type": 0,
                 "bonus": 0,
                 "balance": _to_dollars(total_credit_cents),
@@ -90,12 +93,15 @@ class GameroomBackend:
 
     async def redeem(self, ctx: BackendContext, *, amount_cents: int) -> RedeemResult:
         pid = await self._player_id(ctx)
+        # Pre-fetch the player balance: same staleness validation as recharge applies to
+        # `customer_balance`. agentMoney returns both fields in one call.
+        snapshot = await self._agent_money(pid)
         # agentWithdraw success returns no `data` block; treat as success and omit balance_cents.
         await self._client.call(
             "POST", "/api/player/agentWithdraw",
             fields={
                 "id": pid,
-                "customer_balance": "",
+                "customer_balance": str(snapshot.get("balance", "")),
                 "opera_type": 1,
                 "balance": _to_dollars(amount_cents),
                 "remark": "",
@@ -128,7 +134,18 @@ class GameroomBackend:
             external_user_id=str(new_id),
         )
 
-    # ---- internal: player_id resolution ----
+    # ---- internal: helpers ----
+
+    async def _agent_money(self, player_id: str) -> dict:
+        """Fetch the current player+agent balance pair. Used to populate the snapshot fields
+        (`available_balance` for recharge, `customer_balance` for withdraw) — the server validates
+        these against its current ledger and rejects mismatches.
+        Returns the `data` dict: {"username": ..., "balance": <int>, "cusBlance": <str>}.
+        """
+        data = await self._client.call(
+            "GET", "/api/player/agentMoney", params={"id": player_id},
+        )
+        return data if isinstance(data, dict) else {}
 
     async def _player_id(self, ctx: BackendContext) -> str:
         """Prefer cached external_user_id; else exact-match the player via userList."""
