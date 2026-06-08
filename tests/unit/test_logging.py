@@ -36,6 +36,29 @@ def test_goldentreasure_secret_fields_are_redacted():
     assert out["pwd"] == "***" and out["x-token"] == "***"
 
 
+def test_aspnet_password_fields_are_redacted():
+    from app.logging import _redact_in_place
+    d = {
+        "txtLoginPass": "secret1",
+        "txtLogonPass": "secret2",
+        "txtLogonPass2": "secret2",
+        "txtConfirmPass": "secret3",
+        "txtSureConfirmPass": "secret3",
+        "ASP.NET_SessionId": "ABC123",
+        "anticaptcha_api_key": "key",
+        "other": "visible",
+    }
+    _redact_in_place(d)
+    assert d["txtLoginPass"] == "***"
+    assert d["txtLogonPass"] == "***"
+    assert d["txtLogonPass2"] == "***"
+    assert d["txtConfirmPass"] == "***"
+    assert d["txtSureConfirmPass"] == "***"
+    assert d["ASP.NET_SessionId"] == "***"
+    assert d["anticaptcha_api_key"] == "***"
+    assert d["other"] == "visible"
+
+
 def test_configure_logging_runs_and_logger_emits(capsys):
     # Regression: configure_logging() runs on app/worker startup. A bad structlog
     # API name here would crash the service at boot even though the redaction unit
