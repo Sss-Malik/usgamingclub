@@ -1,5 +1,5 @@
 import re
-from urllib.parse import parse_qs, urlencode, urlparse
+from urllib.parse import parse_qs, urlencode, urljoin, urlparse
 
 import httpx
 
@@ -22,7 +22,7 @@ _BASE_HEADERS = {
 }
 
 _CAPTCHA_IMG_RE = re.compile(
-    r'<img[^>]+src=["\'](Tools/VerifyImagePage\.aspx\?[^"\']+)["\']',
+    r'<img[^>]+src=["\']([^"\']*Tools/VerifyImagePage\.aspx\?[^"\']+)["\']',
     re.IGNORECASE,
 )
 _SESSION_COOKIE = "ASP.NET_SessionId"
@@ -47,6 +47,9 @@ async def login(
     base = base_url.rstrip("/")
     last_errtype: str | None = None
     for _attempt in range(max_attempts):
+        # The captcha is session-bound. Each retry must start with a clean cookie jar
+        # so the server issues a brand-new ASP.NET_SessionId on the GET below.
+        http.cookies.clear()
         # Each attempt uses a fresh cookie jar (cookies live on the http client only for the
         # duration of the attempt; on failure we forget them and start over).
         cookies: dict[str, str] = {}
@@ -63,7 +66,7 @@ async def login(
         m = _CAPTCHA_IMG_RE.search(r1.text)
         if not m:
             raise TransientBackendError(f"{driver_prefix}:login_no_captcha_img")
-        captcha_url = f"{base}/{m.group(1)}"
+        captcha_url = urljoin(f"{base}/", m.group(1))
 
         # 2. GET the captcha image (must reuse the same cookie jar).
         try:
@@ -75,7 +78,14 @@ async def login(
         cookies.update({k: v for k, v in r2.cookies.items()})
 
         # 3. Solve.
-        text = await captcha_solver.solve_numeric_image(r2.content)
+        try:
+            text = await captcha_solver.solve_numeric_image(r2.content)
+        except (BackendError, TransientBackendError):
+            raise
+        except Exception as exc:  # noqa: BLE001 - wrap unexpected solver errors
+            raise TransientBackendError(
+                f"{driver_prefix}:captcha_solver:{type(exc).__name__}"
+            ) from exc
 
         # 4. POST credentials.
         form_fields = {
@@ -102,7 +112,7 @@ async def login(
             raise TransientBackendError(f"{driver_prefix}:login_transport:{type(exc).__name__}") from exc
         if r3.status_code >= 500:
             raise TransientBackendError(f"{driver_prefix}:login_http_{r3.status_code}")
-        if r3.status_code != 301:
+        if r3.status_code not in (301, 302):
             raise TransientBackendError(f"{driver_prefix}:login_unexpected_{r3.status_code}")
 
         loc = r3.headers.get("Location", "")
@@ -121,6 +131,10 @@ async def login(
             continue                                # captcha wrong — restart attempt with fresh GET
         # Terminal: bad creds, banned IP, banned account, etc.
         code = login_errtype_to_code(errtype)
+        if code.startswith("unknown:"):
+            raise TransientBackendError(
+                f"{driver_prefix}:login_failed_unmapped_errtype:{errtype!r}"
+            )
         raise BackendError(f"{driver_prefix}:login_failed:{code}")
 
     # Exhausted attempts (only reachable via repeated `verifycode`).
