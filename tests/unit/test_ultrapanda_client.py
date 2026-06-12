@@ -127,3 +127,96 @@ async def test_signed_call_injects_stime_sign_and_headers(fake_redis):
     assert sent.headers["x-fingerprint"] == FINGERPRINT
     assert decrypt_xtoken(sent.headers["x-token"], ms_time) == "testtok"
     assert sent.headers["content-type"] == "application/json;charset=UTF-8"
+
+
+# --- throttle ---
+
+@respx.mock
+async def test_throttle_blocks_second_enter_score_within_ttl(fake_redis):
+    """SET NX vpower_throttle:{game_id} ex=6 — second enterScore inside TTL must wait."""
+    store = InMemoryTokenStore()
+    await store.set(42, CachedSession(token="t", expires_at=int(time.time()) + 3600),
+                    ttl_seconds=3600)
+    respx.post(f"{BASE}/account/enterScore").mock(
+        return_value=httpx.Response(200, json={"code": 20000, "message": "ok"})
+    )
+    async with httpx.AsyncClient(base_url=BASE) as http:
+        c = _client(http, store=store, redis=fake_redis)
+        await fake_redis.set("vpower_throttle:42", b"1", ex=6, nx=True)
+        with pytest.raises(TransientBackendError, match="throttle_acquire_timeout"):
+            await c.call_throttled("/account/enterScore", {"account": "x", "score": "1", "user_type": 0})
+
+
+@respx.mock
+async def test_throttle_allows_call_when_key_absent(fake_redis):
+    store = InMemoryTokenStore()
+    await store.set(42, CachedSession(token="t", expires_at=int(time.time()) + 3600),
+                    ttl_seconds=3600)
+    respx.post(f"{BASE}/account/enterScore").mock(
+        return_value=httpx.Response(200, json={"code": 20000, "message": "进分成功"})
+    )
+    async with httpx.AsyncClient(base_url=BASE) as http:
+        c = _client(http, store=store, redis=fake_redis)
+        body = await c.call_throttled("/account/enterScore",
+                                     {"account": "x", "score": "1", "user_type": 0})
+    assert body["code"] == 20000
+    assert await fake_redis.exists("vpower_throttle:42") == 1
+
+
+@respx.mock
+async def test_throttle_rate_limit_code_167_is_transient(fake_redis):
+    store = InMemoryTokenStore()
+    await store.set(42, CachedSession(token="t", expires_at=int(time.time()) + 3600),
+                    ttl_seconds=3600)
+    respx.post(f"{BASE}/account/enterScore").mock(
+        return_value=httpx.Response(200, json={"code": 167, "message": "high frequency request"})
+    )
+    async with httpx.AsyncClient(base_url=BASE) as http:
+        c = _client(http, store=store, redis=fake_redis)
+        with pytest.raises(TransientBackendError, match="rate_limited"):
+            await c.call_throttled("/account/enterScore",
+                                  {"account": "x", "score": "1", "user_type": 0},
+                                  op="recharge")
+
+
+# --- session-death detection + retry-once-after-relogin ---
+
+@respx.mock
+async def test_call_retries_once_after_session_expired_1086(fake_redis):
+    """Code 1086 (Not logged in) triggers cache-clear → re-login → retry the original call."""
+    store = InMemoryTokenStore()
+    await store.set(42, CachedSession(token="DEAD", expires_at=int(time.time()) + 3600),
+                    ttl_seconds=3600)
+    respx.post(f"{BASE}/user/login").mock(
+        return_value=httpx.Response(200, json={"code": 20000, "token": "FRESH"})
+    )
+    route = respx.post(f"{BASE}/user/CurScore").mock(
+        side_effect=[
+            httpx.Response(200, json={"code": 1086, "message": "Not logged in"}),
+            httpx.Response(200, json={"code": 20000, "LimitNum": "1.50"}),
+        ]
+    )
+    async with httpx.AsyncClient(base_url=BASE) as http:
+        c = _client(http, store=store, redis=fake_redis)
+        body = await c.call("/user/CurScore", {"token": "DEAD"})
+    assert body == {"code": 20000, "LimitNum": "1.50"}
+    assert route.call_count == 2
+    cached = await store.get(42)
+    assert cached is not None and cached.token == "FRESH"
+
+
+@respx.mock
+async def test_call_does_not_retry_more_than_once_on_repeated_1086(fake_redis):
+    store = InMemoryTokenStore()
+    await store.set(42, CachedSession(token="DEAD", expires_at=int(time.time()) + 3600),
+                    ttl_seconds=3600)
+    respx.post(f"{BASE}/user/login").mock(
+        return_value=httpx.Response(200, json={"code": 20000, "token": "FRESH"})
+    )
+    respx.post(f"{BASE}/user/CurScore").mock(
+        return_value=httpx.Response(200, json={"code": 1086, "message": "Not logged in"})
+    )
+    async with httpx.AsyncClient(base_url=BASE) as http:
+        c = _client(http, store=store, redis=fake_redis)
+        with pytest.raises(TransientBackendError, match="session_dead_after_relogin"):
+            await c.call("/user/CurScore", {"token": "DEAD"})

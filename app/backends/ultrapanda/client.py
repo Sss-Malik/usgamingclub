@@ -127,12 +127,50 @@ class UltraPandaClient:
             raise BackendError(f"{self._driver}:{slug}")
         raise TransientBackendError(f"{self._driver}:{slug}")
 
-    # ---- signed call ----
+    # ---- session-death-aware call ----
 
-    async def call(self, path: str, params: dict | None = None) -> dict:
-        """Make one signed POST. Body gets auto-signed; headers carry x-time/x-token/x-fingerprint."""
+    async def call(self, path: str, params: dict | None = None, *, op: str = "") -> dict:
+        """Signed POST with session-death detection. If the response is `code 1086`
+        (Not logged in), clear the cached token, re-login, and retry the call once.
+        """
+        params = dict(params or {})
         token = await self.get_or_login()
-        return await self._do_call(path, params or {}, token=token)
+        body = await self._do_call(path, params, token=token)
+        if body.get("code") == 1086:
+            await self._store.clear(self._game_id)
+            token = await self.get_or_login()
+            body = await self._do_call(path, params, token=token)
+            if body.get("code") == 1086:
+                raise TransientBackendError(f"{self._driver}:session_dead_after_relogin")
+        return body
+
+    # ---- throttled call (enterScore only) ----
+
+    async def call_throttled(
+        self, path: str, params: dict | None = None, *, op: str = "",
+    ) -> dict:
+        """Like `.call()` but acquires `SET NX vpower_throttle:{game_id} ex={throttle_ttl}`
+        before issuing the request. Used for /account/enterScore (recharge + redeem).
+        """
+        await self._acquire_throttle()
+        body = await self.call(path, params, op=op)
+        if body.get("code") == 167:
+            raise TransientBackendError(f"{self._driver}:rate_limited")
+        return body
+
+    async def _acquire_throttle(self) -> None:
+        import asyncio
+        key = f"vpower_throttle:{self._game_id}"
+        deadline = time.monotonic() + self._throttle_acquire
+        while True:
+            ok = await self._redis.set(key, b"1", nx=True, ex=self._throttle_ttl)
+            if ok:
+                return
+            if time.monotonic() >= deadline:
+                raise TransientBackendError(
+                    f"{self._driver}:throttle_acquire_timeout"
+                )
+            await asyncio.sleep(0.5)
 
     async def _do_call(self, path: str, params: dict, *, token: str) -> dict:
         body: dict = dict(params)
