@@ -42,6 +42,11 @@ class Settings(BaseSettings):
     aspnet_session_ttl_seconds: int = 1800
     aspnet_lock_ttl_seconds: int = 20
     aspnet_lock_acquire_timeout_seconds: float = 30.0
+    vpower_session_ttl_seconds: int = 1800
+    vpower_throttle_ttl_seconds: int = 6
+    vpower_throttle_acquire_timeout_seconds: float = 10.0
+    vpower_session_lock_ttl_seconds: int = 10
+    vpower_session_lock_acquire_timeout_seconds: float = 10.0
 
     replay_window_seconds: int = 300
 

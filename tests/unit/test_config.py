@@ -65,3 +65,13 @@ def test_db_driver_override_changes_dsn(monkeypatch):
     )
     assert s.db_dsn == "mysql+aiomysql://root:@127.0.0.1:3306/casino"
     assert s.db_driver == "aiomysql"
+
+
+def test_vpower_defaults():
+    from app.config import Settings
+    s = Settings()
+    assert s.vpower_session_ttl_seconds == 1800
+    assert s.vpower_throttle_ttl_seconds == 6
+    assert s.vpower_throttle_acquire_timeout_seconds == 10.0
+    assert s.vpower_session_lock_ttl_seconds == 10
+    assert s.vpower_session_lock_acquire_timeout_seconds == 10.0
