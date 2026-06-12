@@ -72,7 +72,7 @@ class OrionStarsBackend:
         dialog_url, _ = await self._client.get_dialog_url(tourl=0, uid=uid, gid=gid)
         text = await self._client.submit_dialog(
             dialog_url=dialog_url,
-            extra_fields={"txtAddGold": _to_dollars(amount_cents), "txtReason": ""},
+            extra_fields={"txtAddGold": _to_dollars(total_credit_cents), "txtReason": ""},
         )
         kind, args = self._client.classify(text)
         if kind == "success":

@@ -149,12 +149,15 @@ async def test_recharge_full_flow_success():
         await _seed_session(store)
         result = await backend.recharge(
             _ctx(account=_account(external="21041615:21219386")),
-            amount_cents=100, bonus_cents=0, total_credit_cents=100,
+            amount_cents=1200, bonus_cents=1200, total_credit_cents=2400,
         )
     # Spec: omit balance_cents (player balance isn't in this response)
     assert result.balance_cents is None
     sent = submit.calls.last.request.content.decode()
-    assert "txtAddGold=1" in sent              # ceil(100/100) = 1
+    # The form has one amount field; we must send `total_credit_cents` (principal + bonus),
+    # not `amount_cents` — otherwise the bonus is silently dropped on the portal side.
+    assert "txtAddGold=24" in sent             # ceil(2400/100) = 24
+    assert "txtAddGold=12" not in sent         # regression guard: don't send only the principal
     assert "__EVENTTARGET=Button1" in sent
     # tourl POST sent the right indices
     tourl_body = posts.calls[0].request.content.decode()
