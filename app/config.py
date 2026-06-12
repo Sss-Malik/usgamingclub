@@ -36,6 +36,12 @@ class Settings(BaseSettings):
     mock_force_fail_reason: str = "forced mock failure"
 
     anticaptcha_api_key: str = ""
+    anticaptcha_poll_interval_seconds: float = 2.0
+    anticaptcha_max_poll_seconds: float = 120.0
+    captcha_login_max_attempts: int = 3
+    aspnet_session_ttl_seconds: int = 1800
+    aspnet_lock_ttl_seconds: int = 20
+    aspnet_lock_acquire_timeout_seconds: float = 30.0
 
     replay_window_seconds: int = 300
 

@@ -201,3 +201,75 @@ def test_goldentreasure_missing_redis_raises():
             http_client=object(), settings=s, redis=None,
         )
     assert ei.value.reason == "missing_redis_client"
+
+
+def test_orionstars_and_milkyway_in_non_idempotent_drivers():
+    from app.backends.registry import NON_IDEMPOTENT_DRIVERS
+    assert "orionstars" in NON_IDEMPOTENT_DRIVERS
+    assert "milkyway" in NON_IDEMPOTENT_DRIVERS
+
+
+async def test_resolve_orionstars_returns_orionstars_backend(fake_redis):
+    import httpx
+    from app.backends.context import GameCredentials
+    from app.backends.orionstars.backend import OrionStarsBackend
+    from app.backends.registry import resolve_backend
+    from app.config import Settings
+    creds = GameCredentials(
+        game_id=99, name="OS",
+        backend_url="https://os.test", login_page_url=None,
+        backend_username="u", backend_password="p",
+        api_base_url=None, api_agent_id=None, api_secret_key=None,
+        binding_key=None, backend_driver="orionstars",
+    )
+    settings = Settings(anticaptcha_api_key="testkey")
+    async with httpx.AsyncClient() as http:
+        b = resolve_backend(
+            "orionstars", credentials=creds, http_client=http,
+            settings=settings, redis=fake_redis,
+        )
+    assert isinstance(b, OrionStarsBackend)
+
+
+async def test_resolve_milkyway_returns_milkyway_backend(fake_redis):
+    import httpx
+    from app.backends.context import GameCredentials
+    from app.backends.milkyway.backend import MilkyWayBackend
+    from app.backends.registry import resolve_backend
+    from app.config import Settings
+    creds = GameCredentials(
+        game_id=100, name="MW",
+        backend_url="https://mw.test", login_page_url=None,
+        backend_username="u", backend_password="p",
+        api_base_url=None, api_agent_id=None, api_secret_key=None,
+        binding_key=None, backend_driver="milkyway",
+    )
+    settings = Settings(anticaptcha_api_key="testkey")
+    async with httpx.AsyncClient() as http:
+        b = resolve_backend(
+            "milkyway", credentials=creds, http_client=http,
+            settings=settings, redis=fake_redis,
+        )
+    assert isinstance(b, MilkyWayBackend)
+
+
+async def test_resolve_orionstars_requires_anticaptcha_key(fake_redis):
+    import httpx
+    from app.backends.base import BackendError
+    from app.backends.context import GameCredentials
+    from app.backends.registry import resolve_backend
+    from app.config import Settings
+    creds = GameCredentials(
+        game_id=99, name="OS",
+        backend_url="https://os.test", login_page_url=None,
+        backend_username="u", backend_password="p",
+        api_base_url=None, api_agent_id=None, api_secret_key=None,
+        binding_key=None, backend_driver="orionstars",
+    )
+    settings = Settings(anticaptcha_api_key="")
+    async with httpx.AsyncClient() as http:
+        with pytest.raises(BackendError, match="missing_anticaptcha_api_key"):
+            resolve_backend(
+                "orionstars", credentials=creds, http_client=http,
+                settings=settings, redis=fake_redis,
+            )

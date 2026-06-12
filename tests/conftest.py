@@ -133,3 +133,31 @@ async def fake_redis():
         yield r
     finally:
         await r.aclose()
+
+
+class FakeCaptchaSolver:
+    """Reusable test double for CaptchaSolver. Returns canned answers or raises on demand.
+
+    Default behavior: returns a fixed 5-digit string. Tests may construct with `answers=[...]`
+    to return different solutions per call, or `raise_exc=...` to simulate solver failure.
+    """
+
+    def __init__(
+        self, *, answers: list[str] | None = None, raise_exc: Exception | None = None
+    ) -> None:
+        self._answers = list(answers) if answers else ["34596"]
+        self._raise = raise_exc
+        self.calls: list[bytes] = []
+
+    async def solve_numeric_image(self, image: bytes) -> str:
+        self.calls.append(image)
+        if self._raise is not None:
+            raise self._raise
+        if not self._answers:
+            return "00000"
+        return self._answers.pop(0) if len(self._answers) > 1 else self._answers[0]
+
+
+@pytest_asyncio.fixture
+async def fake_captcha():
+    return FakeCaptchaSolver()

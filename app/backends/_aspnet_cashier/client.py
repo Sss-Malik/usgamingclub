@@ -1,0 +1,269 @@
+import time
+from collections.abc import Mapping
+from urllib.parse import urlencode
+
+import httpx
+
+from app.backends.base import BackendError, TransientBackendError
+from app.backends._aspnet_cashier.errors import classify_business_failure_message
+from app.backends._aspnet_cashier.login import _BASE_HEADERS, _FORM_CT, _SESSION_COOKIE, login
+from app.backends._aspnet_cashier.parsers import (
+    parse_agent_balance_widget,
+    parse_dialog_response,
+    parse_get_score_response,
+    parse_milkyway_balance_row,
+    parse_sentinel,
+    parse_update_select,
+    parse_viewstate,
+)
+from app.backends._aspnet_cashier.session import CachedSession, SessionStore
+from app.captcha.base import CaptchaSolver
+
+
+def _expired(session: CachedSession | None, *, skew_seconds: int = 60) -> bool:
+    return session is None or session.expires_at - skew_seconds <= int(time.time())
+
+
+class AspnetCashierClient:
+    """HTTP client shared by OrionStars + MilkyWay backends.
+
+    Responsibilities: (1) session cache + double-checked locking around login,
+    (2) cookie+Accept-Language injection on every request, (3) session-death detection
+    with retry-once-after-relogin, (4) the AccountsList/dialog helpers used by ops.
+    """
+
+    def __init__(
+        self, *, base_url: str, username: str, password: str,
+        http_client: httpx.AsyncClient,
+        session_store: SessionStore,
+        captcha_solver: CaptchaSolver,
+        game_id: int,
+        session_ttl_seconds: int,
+        lock_ttl_seconds: int,
+        lock_acquire_timeout_seconds: float,
+        captcha_login_max_attempts: int,
+        driver_prefix: str,
+    ) -> None:
+        self._base = base_url.rstrip("/")
+        self._username = username
+        self._password = password
+        self._http = http_client
+        self._store = session_store
+        self._captcha = captcha_solver
+        self._game_id = game_id
+        self._session_ttl = session_ttl_seconds
+        self._lock_ttl = lock_ttl_seconds
+        self._lock_acquire = lock_acquire_timeout_seconds
+        self._max_attempts = captcha_login_max_attempts
+        self._driver = driver_prefix
+
+    # ---- session ----
+
+    async def get_or_login(self) -> str:
+        cached = await self._store.get(self._game_id)
+        if not _expired(cached):
+            return cached.cookie       # type: ignore[union-attr]
+        try:
+            async with self._store.login_lock(
+                self._game_id, ttl_seconds=self._lock_ttl,
+                acquire_timeout=self._lock_acquire,
+            ):
+                cached = await self._store.get(self._game_id)
+                if not _expired(cached):
+                    return cached.cookie       # type: ignore[union-attr]
+                return await self._do_login()
+        except TimeoutError:
+            # Lock contention. The lock is efficiency-only here (sessions coexist), so
+            # fall through to an unlocked login — a wasted captcha beats a failed op.
+            return await self._do_login()
+
+    async def _do_login(self) -> str:
+        cookie = await login(
+            http=self._http, base_url=self._base,
+            username=self._username, password=self._password,
+            captcha_solver=self._captcha,
+            max_attempts=self._max_attempts,
+            driver_prefix=self._driver,
+        )
+        await self._store.set(
+            self._game_id,
+            CachedSession(cookie=cookie, expires_at=int(time.time()) + self._session_ttl),
+            ttl_seconds=self._session_ttl,
+        )
+        return cookie
+
+    # ---- request ----
+
+    async def request_text(
+        self, method: str, path: str, *,
+        form: Mapping[str, str | int] | None = None,
+        params: Mapping[str, str | int] | None = None,
+    ) -> str:
+        """One module-page request with cookie + Accept-Language. Retries exactly once
+        if the response indicates a dead session (500 NRE, or 200 returning the login page).
+
+        Returns the raw response text; callers parse it.
+        """
+        cookie = await self.get_or_login()
+        resp = await self._do_request(method, path, cookie, form=form, params=params)
+        if self._looks_dead(resp):
+            await self._store.clear(self._game_id)
+            cookie = await self.get_or_login()
+            resp = await self._do_request(method, path, cookie, form=form, params=params)
+            if self._looks_dead(resp):
+                raise TransientBackendError(f"{self._driver}:session_dead_after_relogin")
+        if resp.status_code >= 500:
+            raise TransientBackendError(f"{self._driver}:http_{resp.status_code}")
+        if resp.status_code >= 400:
+            # 4xx that wasn't a recognized dead-session symptom (handled above) is treated as
+            # transient: most are momentary (Cloudflare blip, rate limit, brief auth glitch).
+            # Letting Laravel retry beats burning the op on a recoverable error.
+            raise TransientBackendError(f"{self._driver}:http_{resp.status_code}")
+        return resp.text
+
+    async def _do_request(
+        self, method: str, path: str, cookie: str, *,
+        form: Mapping[str, str | int] | None = None,
+        params: Mapping[str, str | int] | None = None,
+    ) -> httpx.Response:
+        url = f"{self._base}{path}" if path.startswith("/") else f"{self._base}/{path}"
+        headers = {**_BASE_HEADERS}
+        cookies = {_SESSION_COOKIE: cookie}
+        try:
+            if method == "GET":
+                get_kwargs: dict = {"headers": headers, "cookies": cookies, "follow_redirects": False}
+                if params:
+                    get_kwargs["params"] = _str_map(params)
+                return await self._http.get(url, **get_kwargs)
+            headers["Content-Type"] = _FORM_CT
+            body = urlencode(_str_map(form or {})).encode()
+            return await self._http.post(
+                url, content=body, headers=headers, cookies=cookies, follow_redirects=False,
+            )
+        except httpx.HTTPError as exc:
+            raise TransientBackendError(f"{self._driver}:transport:{type(exc).__name__}") from exc
+
+    @staticmethod
+    def _looks_dead(resp: httpx.Response) -> bool:
+        """True if the response looks like the dead-session NRE or the login page."""
+        if resp.status_code == 500 and "Server Error in '/' Application" in resp.text:
+            return True
+        if resp.status_code == 200 and 'name="txtLoginName"' in resp.text:
+            return True
+        if resp.status_code == 301 and "errtype=overtime" in resp.headers.get("Location", ""):
+            return True
+        return False
+
+    # ---- op-facing helpers ----
+
+    async def fetch_accounts_list_html(self) -> str:
+        """Authenticated GET of the workhorse panel. Used by agent_balance + search bootstrap."""
+        return await self.request_text("GET", "/Module/AccountManager/AccountsList.aspx",
+                                       params={"timestamp": str(int(time.time()))})
+
+    async def search_account(self, query: str) -> list[tuple[str, str]]:
+        """Run the ctl16 search and return all (uid, gid) pairs from the result HTML.
+
+        `query` matches against both GameID and Account (server-side `LIKE 'x%'` per §4.8 SQL).
+        """
+        # First GET the page to scrape viewstate (AccountsList has no __EVENTVALIDATION).
+        html = await self.fetch_accounts_list_html()
+        vs = parse_viewstate(html)
+        body = await self.request_text(
+            "POST", "/Module/AccountManager/AccountsList.aspx",
+            form={
+                "__EVENTTARGET": "ctl16",
+                "__EVENTARGUMENT": "",
+                "__VIEWSTATE": vs.viewstate,
+                "__VIEWSTATEGENERATOR": vs.viewstate_generator,
+                "__SCROLLPOSITIONX": "0",
+                "__SCROLLPOSITIONY": "0",
+                "txtSearch": query,
+                "ShowHideAccount": "1",
+            },
+        )
+        return parse_update_select(body)
+
+    async def get_dialog_url(self, *, tourl: int, uid: str, gid: str) -> tuple[str, str]:
+        """POST the tourl handshake; returns (dialog_url, param_token)."""
+        body = await self.request_text(
+            "POST", "/Module/AccountManager/AccountsList.aspx",
+            form={"tourl": str(tourl), "getpassuid": uid, "getpassgid": gid},
+        )
+        return parse_dialog_response(body)
+
+    async def submit_dialog(
+        self, *, dialog_url: str, extra_fields: dict[str, str],
+    ) -> str:
+        """GET the dialog page (scraping viewstate + __EVENTVALIDATION), then POST the action.
+
+        `extra_fields` is the op-specific payload (txtAddGold/txtReason for money ops,
+        txtConfirmPass/txtSureConfirmPass for reset). Returns the POST response text.
+        """
+        path = dialog_url if dialog_url.startswith("/") else "/" + dialog_url
+        get_body = await self.request_text("GET", path)
+        vs = parse_viewstate(get_body)
+        form: dict[str, str] = {
+            "__EVENTTARGET": "Button1",
+            "__EVENTARGUMENT": "",
+            "__VIEWSTATE": vs.viewstate,
+            "__VIEWSTATEGENERATOR": vs.viewstate_generator,
+        }
+        if vs.event_validation is not None:
+            form["__EVENTVALIDATION"] = vs.event_validation
+        form.update(extra_fields)
+        return await self.request_text("POST", path, form=form)
+
+    async def fetch_agent_balance_dollars(self) -> int:
+        """Read the agent's `Balance:NN` widget from AccountsList.aspx. Returns whole dollars."""
+        html = await self.fetch_accounts_list_html()
+        return parse_agent_balance_widget(html)
+
+    async def post_getscoreuserid(self, uid: str) -> tuple[str, str]:
+        """OrionStars-only: read player credit & total-win via the getscoreuserid POST."""
+        body = await self.request_text(
+            "POST", "/Module/AccountManager/AccountsList.aspx",
+            form={"getscoreuserid": uid},
+        )
+        return parse_get_score_response(body)
+
+    async def milkyway_read_balance(self, *, query: str) -> str:
+        """MilkyWay-only: search and parse the Balance column from the matching row.
+
+        `query` is the account name or the GameID — either matches the LIKE clause; for cached
+        callers GameID is preferred (more selective).
+        """
+        html = await self.fetch_accounts_list_html()
+        vs = parse_viewstate(html)
+        body = await self.request_text(
+            "POST", "/Module/AccountManager/AccountsList.aspx",
+            form={
+                "__EVENTTARGET": "ctl16",
+                "__EVENTARGUMENT": "",
+                "__VIEWSTATE": vs.viewstate,
+                "__VIEWSTATEGENERATOR": vs.viewstate_generator,
+                "__SCROLLPOSITIONX": "0",
+                "__SCROLLPOSITIONY": "0",
+                "txtSearch": query,
+                "ShowHideAccount": "1",
+            },
+        )
+        return parse_milkyway_balance_row(body, account=query)
+
+    # ---- sentinel helper used by ops ----
+
+    def classify(self, html: str) -> tuple[str, list[str]]:
+        """Returns (kind, args). Raises BackendError on `kind == 'unknown'`."""
+        kind, args = parse_sentinel(html)
+        if kind == "unknown":
+            raise BackendError(f"{self._driver}:unknown_sentinel:{html[:80]!r}")
+        return kind, args
+
+    def business_failure_to_error(self, message: str) -> BackendError:
+        """Map a business-failure sentinel message to a driver-prefixed BackendError."""
+        slug = classify_business_failure_message(message)
+        return BackendError(f"{self._driver}:{slug}")
+
+
+def _str_map(d: Mapping) -> dict[str, str]:
+    return {k: ("" if v is None else str(v)) for k, v in d.items()}

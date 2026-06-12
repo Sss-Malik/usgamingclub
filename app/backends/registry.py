@@ -1,4 +1,6 @@
 # app/backends/registry.py
+from app.backends._aspnet_cashier.client import AspnetCashierClient
+from app.backends._aspnet_cashier.session import CookieSessionStore
 from app.backends.base import BackendError, GameBackend
 from app.backends.context import GameCredentials
 from app.backends.gameroom.backend import GameroomBackend
@@ -8,7 +10,10 @@ from app.backends.gamevault.client import GameVaultClient
 from app.backends.goldentreasure.backend import GoldenTreasureBackend
 from app.backends.goldentreasure.client import GoldenTreasureClient
 from app.backends.goldentreasure.session import RedisSessionStore as GTSessionStore
+from app.backends.milkyway.backend import MilkyWayBackend
 from app.backends.mock.backend import MockBackend
+from app.backends.orionstars.backend import OrionStarsBackend
+from app.captcha.anticaptcha import AntiCaptchaSolver
 from app.config import Settings
 
 # Driver strings that share the GameVault provider's wire protocol (auth, endpoints, envelope).
@@ -16,7 +21,9 @@ _GAMEVAULT_PROVIDER_DRIVERS = frozenset({"gamevault", "juwa", "juwa2"})
 
 # Drivers with no server-side idempotency (no order_id/dedupe). The API endpoint passes
 # arq _max_tries=1 for these so a worker crash mid-money-op cannot double-apply funds.
-NON_IDEMPOTENT_DRIVERS: frozenset[str] = frozenset({"gameroom", "goldentreasure"})
+NON_IDEMPOTENT_DRIVERS: frozenset[str] = frozenset({
+    "gameroom", "goldentreasure", "orionstars", "milkyway",
+})
 
 
 def resolve_backend(
@@ -33,6 +40,8 @@ def resolve_backend(
     `gamevault`/`juwa`/`juwa2` -> GameVaultBackend (same provider, per-game creds).
     `gameroom` -> GameroomBackend (requires session_store).
     `goldentreasure` -> GoldenTreasureBackend (requires redis client; constructs its own SessionStore).
+    `orionstars`/`milkyway` -> OrionStarsBackend / MilkyWayBackend over the shared ASP.NET
+        cashier client (requires redis client + settings.anticaptcha_api_key for captcha-aware login).
     Unknown -> BackendError.
     """
     key = (driver or "mock").lower()
@@ -80,4 +89,26 @@ def resolve_backend(
                 game_id=credentials.game_id,
             )
         )
+    if key in {"orionstars", "milkyway"}:
+        if not (credentials.backend_url and credentials.backend_username and credentials.backend_password):
+            raise BackendError(f"missing_{key}_credentials")
+        if redis is None:
+            raise BackendError("missing_redis_client")
+        if not settings.anticaptcha_api_key:
+            raise BackendError("missing_anticaptcha_api_key")
+        client = AspnetCashierClient(
+            base_url=credentials.backend_url,
+            username=credentials.backend_username,
+            password=credentials.backend_password,
+            http_client=http_client,
+            session_store=CookieSessionStore(redis),
+            captcha_solver=AntiCaptchaSolver(api_key=settings.anticaptcha_api_key),
+            game_id=credentials.game_id,
+            session_ttl_seconds=settings.aspnet_session_ttl_seconds,
+            lock_ttl_seconds=settings.aspnet_lock_ttl_seconds,
+            lock_acquire_timeout_seconds=settings.aspnet_lock_acquire_timeout_seconds,
+            captcha_login_max_attempts=settings.captcha_login_max_attempts,
+            driver_prefix=key,
+        )
+        return OrionStarsBackend(client) if key == "orionstars" else MilkyWayBackend(client)
     raise BackendError(f"unknown_backend_driver:{driver}")

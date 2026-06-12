@@ -17,6 +17,14 @@ SECRET_KEYS = {
     "token",
     "x-signature",
     "x-token",              # Golden Treasure: AES of session token; per-request rebuild
+    # Phase 5: ASP.NET cashier form fields + session cookie + AntiCaptcha key
+    "txtloginpass",
+    "txtlogonpass",
+    "txtlogonpass2",
+    "txtconfirmpass",
+    "txtsureconfirmpass",
+    "asp.net_sessionid",
+    "anticaptcha_api_key",
 }
 
 
