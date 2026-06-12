@@ -25,6 +25,9 @@ SECRET_KEYS = {
     "txtsureconfirmpass",
     "asp.net_sessionid",
     "anticaptcha_api_key",
+    # Phase 6: UltraPanda/VBlink (vpower)
+    "admin-token",
+    "auth_code",
 }
 
 
