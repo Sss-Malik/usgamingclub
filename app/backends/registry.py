@@ -13,16 +13,23 @@ from app.backends.goldentreasure.session import RedisSessionStore as GTSessionSt
 from app.backends.milkyway.backend import MilkyWayBackend
 from app.backends.mock.backend import MockBackend
 from app.backends.orionstars.backend import OrionStarsBackend
+from app.backends.ultrapanda.backend import UltraPandaBackend
+from app.backends.ultrapanda.client import UltraPandaClient
+from app.backends.ultrapanda.session import RedisTokenStore as VPowerTokenStore
 from app.captcha.anticaptcha import AntiCaptchaSolver
 from app.config import Settings
 
 # Driver strings that share the GameVault provider's wire protocol (auth, endpoints, envelope).
 _GAMEVAULT_PROVIDER_DRIVERS = frozenset({"gamevault", "juwa", "juwa2"})
 
+# Driver strings that share the vpower provider (UltraPanda + VBlink). Same wire protocol,
+# only the host differs. Verified byte-identical per the Phase 6 findings doc §10.
+_VPOWER_PROVIDER_DRIVERS = frozenset({"ultrapanda", "vblink"})
+
 # Drivers with no server-side idempotency (no order_id/dedupe). The API endpoint passes
 # arq _max_tries=1 for these so a worker crash mid-money-op cannot double-apply funds.
 NON_IDEMPOTENT_DRIVERS: frozenset[str] = frozenset({
-    "gameroom", "goldentreasure", "orionstars", "milkyway",
+    "gameroom", "goldentreasure", "orionstars", "milkyway", "ultrapanda", "vblink",
 })
 
 
@@ -42,6 +49,8 @@ def resolve_backend(
     `goldentreasure` -> GoldenTreasureBackend (requires redis client; constructs its own SessionStore).
     `orionstars`/`milkyway` -> OrionStarsBackend / MilkyWayBackend over the shared ASP.NET
         cashier client (requires redis client + settings.anticaptcha_api_key for captcha-aware login).
+    `ultrapanda`/`vblink` -> UltraPandaBackend over the shared vpower client (requires redis;
+        VBlink is a registry alias — same class, driver_prefix distinguishes them in logs/keys).
     Unknown -> BackendError.
     """
     key = (driver or "mock").lower()
@@ -111,4 +120,26 @@ def resolve_backend(
             driver_prefix=key,
         )
         return OrionStarsBackend(client) if key == "orionstars" else MilkyWayBackend(client)
+    if key in _VPOWER_PROVIDER_DRIVERS:
+        if not (credentials.backend_url and credentials.backend_username and credentials.backend_password):
+            raise BackendError(f"missing_{key}_credentials")
+        if redis is None:
+            raise BackendError("missing_redis_client")
+        return UltraPandaBackend(
+            UltraPandaClient(
+                base_url=credentials.backend_url,
+                username=credentials.backend_username,
+                password=credentials.backend_password,
+                http_client=http_client,
+                session_store=VPowerTokenStore(redis),
+                redis=redis,
+                game_id=credentials.game_id,
+                session_ttl_seconds=settings.vpower_session_ttl_seconds,
+                throttle_ttl_seconds=settings.vpower_throttle_ttl_seconds,
+                throttle_acquire_timeout_seconds=settings.vpower_throttle_acquire_timeout_seconds,
+                session_lock_ttl_seconds=settings.vpower_session_lock_ttl_seconds,
+                session_lock_acquire_timeout_seconds=settings.vpower_session_lock_acquire_timeout_seconds,
+                driver_prefix=key,
+            )
+        )
     raise BackendError(f"unknown_backend_driver:{driver}")

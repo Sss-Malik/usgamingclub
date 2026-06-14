@@ -273,3 +273,100 @@ async def test_resolve_orionstars_requires_anticaptcha_key(fake_redis):
                 "orionstars", credentials=creds, http_client=http,
                 settings=settings, redis=fake_redis,
             )
+
+
+def test_ultrapanda_and_vblink_in_non_idempotent_drivers():
+    from app.backends.registry import NON_IDEMPOTENT_DRIVERS
+    assert "ultrapanda" in NON_IDEMPOTENT_DRIVERS
+    assert "vblink" in NON_IDEMPOTENT_DRIVERS
+
+
+async def test_resolve_ultrapanda_returns_ultrapanda_backend(fake_redis):
+    import httpx
+    from app.backends.context import GameCredentials
+    from app.backends.registry import resolve_backend
+    from app.backends.ultrapanda.backend import UltraPandaBackend
+    from app.config import Settings
+    creds = GameCredentials(
+        game_id=99, name="UP",
+        backend_url="https://up.test", login_page_url=None,
+        backend_username="u", backend_password="p",
+        api_base_url=None, api_agent_id=None, api_secret_key=None,
+        binding_key=None, backend_driver="ultrapanda",
+    )
+    settings = Settings()
+    async with httpx.AsyncClient() as http:
+        b = resolve_backend(
+            "ultrapanda", credentials=creds, http_client=http,
+            settings=settings, redis=fake_redis,
+        )
+    assert isinstance(b, UltraPandaBackend)
+    assert b._client._driver == "ultrapanda"
+
+
+async def test_resolve_vblink_returns_ultrapanda_backend_with_vblink_prefix(fake_redis):
+    """VBlink is a registry alias: same class, different driver_prefix."""
+    import httpx
+    from app.backends.context import GameCredentials
+    from app.backends.registry import resolve_backend
+    from app.backends.ultrapanda.backend import UltraPandaBackend
+    from app.config import Settings
+    creds = GameCredentials(
+        game_id=100, name="VB",
+        backend_url="https://vb.test", login_page_url=None,
+        backend_username="u", backend_password="p",
+        api_base_url=None, api_agent_id=None, api_secret_key=None,
+        binding_key=None, backend_driver="vblink",
+    )
+    settings = Settings()
+    async with httpx.AsyncClient() as http:
+        b = resolve_backend(
+            "vblink", credentials=creds, http_client=http,
+            settings=settings, redis=fake_redis,
+        )
+    assert isinstance(b, UltraPandaBackend)
+    assert b._client._driver == "vblink"
+
+
+async def test_resolve_ultrapanda_requires_credentials(fake_redis):
+    import httpx
+    import pytest
+    from app.backends.base import BackendError
+    from app.backends.context import GameCredentials
+    from app.backends.registry import resolve_backend
+    from app.config import Settings
+    creds = GameCredentials(
+        game_id=99, name="UP",
+        backend_url=None, login_page_url=None,
+        backend_username=None, backend_password=None,
+        api_base_url=None, api_agent_id=None, api_secret_key=None,
+        binding_key=None, backend_driver="ultrapanda",
+    )
+    async with httpx.AsyncClient() as http:
+        with pytest.raises(BackendError, match="missing_ultrapanda_credentials"):
+            resolve_backend(
+                "ultrapanda", credentials=creds, http_client=http,
+                settings=Settings(), redis=fake_redis,
+            )
+
+
+async def test_resolve_ultrapanda_requires_redis():
+    import httpx
+    import pytest
+    from app.backends.base import BackendError
+    from app.backends.context import GameCredentials
+    from app.backends.registry import resolve_backend
+    from app.config import Settings
+    creds = GameCredentials(
+        game_id=99, name="UP",
+        backend_url="https://up.test", login_page_url=None,
+        backend_username="u", backend_password="p",
+        api_base_url=None, api_agent_id=None, api_secret_key=None,
+        binding_key=None, backend_driver="ultrapanda",
+    )
+    async with httpx.AsyncClient() as http:
+        with pytest.raises(BackendError, match="missing_redis_client"):
+            resolve_backend(
+                "ultrapanda", credentials=creds, http_client=http,
+                settings=Settings(), redis=None,
+            )
