@@ -5,7 +5,7 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class ViewState:
     viewstate: str
-    viewstate_generator: str
+    viewstate_generator: str | None  # Pandamaster omits this on default.aspx + AccountsList.aspx
     event_validation: str | None     # None on pages with EnableEventValidation="false" (AccountsList.aspx)
 
 
@@ -18,20 +18,20 @@ _HIDDEN_RE = re.compile(
 def parse_viewstate(html: str) -> ViewState:
     """Scrape ASP.NET hidden fields from a rendered form.
 
-    __VIEWSTATE and __VIEWSTATEGENERATOR are required. __EVENTVALIDATION is page-specific:
-    dialog pages (GrantTreasure, ChangeTreasure, ResetPassWord, CreateAccount) include it;
-    AccountsList.aspx does not (EnableEventValidation="false").
+    __VIEWSTATE is required (no portal ships without it). __VIEWSTATEGENERATOR is optional —
+    Pandamaster omits it on default.aspx and AccountsList.aspx; per findings §3 we must "send
+    exactly the hidden fields the GET actually contained", and the ctl16 search postback works
+    without it. __EVENTVALIDATION is page-specific: dialog pages (GrantTreasure, ChangeTreasure,
+    ResetPassWord, CreateAccount) include it; AccountsList.aspx does not.
     """
     fields: dict[str, str] = {}
     for m in _HIDDEN_RE.finditer(html):
         fields[m.group("name").upper()] = m.group("value")
     if "__VIEWSTATE" not in fields:
         raise ValueError("__VIEWSTATE not found in form HTML")
-    if "__VIEWSTATEGENERATOR" not in fields:
-        raise ValueError("__VIEWSTATEGENERATOR not found in form HTML")
     return ViewState(
         viewstate=fields["__VIEWSTATE"],
-        viewstate_generator=fields["__VIEWSTATEGENERATOR"],
+        viewstate_generator=fields.get("__VIEWSTATEGENERATOR"),
         event_validation=fields.get("__EVENTVALIDATION"),
     )
 

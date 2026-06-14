@@ -165,22 +165,25 @@ class AspnetCashierClient:
         """Run the ctl16 search and return all (uid, gid) pairs from the result HTML.
 
         `query` matches against both GameID and Account (server-side `LIKE 'x%'` per §4.8 SQL).
+        Pandamaster omits __VIEWSTATEGENERATOR; we skip the field rather than echoing an empty
+        value (findings §3: "send exactly the hidden fields the GET actually contained").
         """
         # First GET the page to scrape viewstate (AccountsList has no __EVENTVALIDATION).
         html = await self.fetch_accounts_list_html()
         vs = parse_viewstate(html)
+        form: dict[str, str] = {
+            "__EVENTTARGET": "ctl16",
+            "__EVENTARGUMENT": "",
+            "__VIEWSTATE": vs.viewstate,
+            "__SCROLLPOSITIONX": "0",
+            "__SCROLLPOSITIONY": "0",
+            "txtSearch": query,
+            "ShowHideAccount": "1",
+        }
+        if vs.viewstate_generator is not None:
+            form["__VIEWSTATEGENERATOR"] = vs.viewstate_generator
         body = await self.request_text(
-            "POST", "/Module/AccountManager/AccountsList.aspx",
-            form={
-                "__EVENTTARGET": "ctl16",
-                "__EVENTARGUMENT": "",
-                "__VIEWSTATE": vs.viewstate,
-                "__VIEWSTATEGENERATOR": vs.viewstate_generator,
-                "__SCROLLPOSITIONX": "0",
-                "__SCROLLPOSITIONY": "0",
-                "txtSearch": query,
-                "ShowHideAccount": "1",
-            },
+            "POST", "/Module/AccountManager/AccountsList.aspx", form=form,
         )
         return parse_update_select(body)
 
@@ -207,8 +210,9 @@ class AspnetCashierClient:
             "__EVENTTARGET": "Button1",
             "__EVENTARGUMENT": "",
             "__VIEWSTATE": vs.viewstate,
-            "__VIEWSTATEGENERATOR": vs.viewstate_generator,
         }
+        if vs.viewstate_generator is not None:
+            form["__VIEWSTATEGENERATOR"] = vs.viewstate_generator
         if vs.event_validation is not None:
             form["__EVENTVALIDATION"] = vs.event_validation
         form.update(extra_fields)
@@ -228,25 +232,27 @@ class AspnetCashierClient:
         return parse_get_score_response(body)
 
     async def milkyway_read_balance(self, *, query: str) -> str:
-        """MilkyWay-only: search and parse the Balance column from the matching row.
+        """MilkyWay-family (MilkyWay/Firekirin/Pandamaster): search and parse the Balance column
+        from the matching row. Pandamaster omits __VIEWSTATEGENERATOR — we skip it when absent.
 
         `query` is the account name or the GameID — either matches the LIKE clause; for cached
         callers GameID is preferred (more selective).
         """
         html = await self.fetch_accounts_list_html()
         vs = parse_viewstate(html)
+        form: dict[str, str] = {
+            "__EVENTTARGET": "ctl16",
+            "__EVENTARGUMENT": "",
+            "__VIEWSTATE": vs.viewstate,
+            "__SCROLLPOSITIONX": "0",
+            "__SCROLLPOSITIONY": "0",
+            "txtSearch": query,
+            "ShowHideAccount": "1",
+        }
+        if vs.viewstate_generator is not None:
+            form["__VIEWSTATEGENERATOR"] = vs.viewstate_generator
         body = await self.request_text(
-            "POST", "/Module/AccountManager/AccountsList.aspx",
-            form={
-                "__EVENTTARGET": "ctl16",
-                "__EVENTARGUMENT": "",
-                "__VIEWSTATE": vs.viewstate,
-                "__VIEWSTATEGENERATOR": vs.viewstate_generator,
-                "__SCROLLPOSITIONX": "0",
-                "__SCROLLPOSITIONY": "0",
-                "txtSearch": query,
-                "ShowHideAccount": "1",
-            },
+            "POST", "/Module/AccountManager/AccountsList.aspx", form=form,
         )
         return parse_milkyway_balance_row(body, account=query)
 

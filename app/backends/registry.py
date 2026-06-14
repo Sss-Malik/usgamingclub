@@ -26,10 +26,21 @@ _GAMEVAULT_PROVIDER_DRIVERS = frozenset({"gamevault", "juwa", "juwa2"})
 # only the host differs. Verified byte-identical per the Phase 6 findings doc §10.
 _VPOWER_PROVIDER_DRIVERS = frozenset({"ultrapanda", "vblink"})
 
+# Drivers that share the OrionStars cashier wire (ASP.NET 3.0.303 family). The OrionStars
+# variant reads player balance via the `getscoreuserid` postback; the MilkyWay variant reads
+# it from the search-results row's `Balance` column. Per findings doc §4.1 and the family
+# table at the top, the only behavioural divergence within this family is the balance-read
+# style. Pandamaster also omits __VIEWSTATEGENERATOR — handled in the shared client.
+_ORIONSTARS_FAMILY_DRIVERS = frozenset({"orionstars"})
+_MILKYWAY_FAMILY_DRIVERS = frozenset({"milkyway", "firekirin", "pandamaster"})
+_ASPNET_CASHIER_DRIVERS = _ORIONSTARS_FAMILY_DRIVERS | _MILKYWAY_FAMILY_DRIVERS
+
 # Drivers with no server-side idempotency (no order_id/dedupe). The API endpoint passes
 # arq _max_tries=1 for these so a worker crash mid-money-op cannot double-apply funds.
 NON_IDEMPOTENT_DRIVERS: frozenset[str] = frozenset({
-    "gameroom", "goldentreasure", "orionstars", "milkyway", "ultrapanda", "vblink",
+    "gameroom", "goldentreasure",
+    "orionstars", "milkyway", "firekirin", "pandamaster",
+    "ultrapanda", "vblink",
 })
 
 
@@ -47,8 +58,10 @@ def resolve_backend(
     `gamevault`/`juwa`/`juwa2` -> GameVaultBackend (same provider, per-game creds).
     `gameroom` -> GameroomBackend (requires session_store).
     `goldentreasure` -> GoldenTreasureBackend (requires redis client; constructs its own SessionStore).
-    `orionstars`/`milkyway` -> OrionStarsBackend / MilkyWayBackend over the shared ASP.NET
-        cashier client (requires redis client + settings.anticaptcha_api_key for captcha-aware login).
+    `orionstars`/`milkyway`/`firekirin`/`pandamaster` -> OrionStarsBackend / MilkyWayBackend
+        over the shared ASP.NET cashier client (requires redis client + settings.anticaptcha_api_key
+        for captcha-aware login). `firekirin` and `pandamaster` are MilkyWay-family aliases — same
+        3.0.303 portal build with search-row Balance read; host is driven by credentials.backend_url.
     `ultrapanda`/`vblink` -> UltraPandaBackend over the shared vpower client (requires redis;
         VBlink is a registry alias — same class, driver_prefix distinguishes them in logs/keys).
     Unknown -> BackendError.
@@ -98,7 +111,7 @@ def resolve_backend(
                 game_id=credentials.game_id,
             )
         )
-    if key in {"orionstars", "milkyway"}:
+    if key in _ASPNET_CASHIER_DRIVERS:
         if not (credentials.backend_url and credentials.backend_username and credentials.backend_password):
             raise BackendError(f"missing_{key}_credentials")
         if redis is None:
@@ -119,7 +132,9 @@ def resolve_backend(
             captcha_login_max_attempts=settings.captcha_login_max_attempts,
             driver_prefix=key,
         )
-        return OrionStarsBackend(client) if key == "orionstars" else MilkyWayBackend(client)
+        if key in _ORIONSTARS_FAMILY_DRIVERS:
+            return OrionStarsBackend(client)
+        return MilkyWayBackend(client)
     if key in _VPOWER_PROVIDER_DRIVERS:
         if not (credentials.backend_url and credentials.backend_username and credentials.backend_password):
             raise BackendError(f"missing_{key}_credentials")

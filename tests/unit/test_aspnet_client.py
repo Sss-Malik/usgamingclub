@@ -257,6 +257,115 @@ async def test_fetch_agent_balance_widget_returns_int_cents():
     assert bal == 42
 
 
+# --- Pandamaster quirk: missing __VIEWSTATEGENERATOR ---
+
+_PANDAMASTER_LIST_HTML = """
+<form id="form1">
+  <input type="hidden" name="__VIEWSTATE" value="PVS" />
+  <input type="hidden" name="__SCROLLPOSITIONX" value="0" />
+  <input type="hidden" name="__SCROLLPOSITIONY" value="0" />
+  <div class="nav">Balance:42</div>
+  <table>
+    <tr><td><a onclick="updateSelect( '11,22')">Update</a></td></tr>
+  </table>
+</form>
+"""
+
+
+@respx.mock
+async def test_search_account_omits_viewstategenerator_when_absent():
+    """Pandamaster's AccountsList GET has no __VIEWSTATEGENERATOR. The search POST must
+    send exactly the hidden fields that were present — i.e. NOT include VSG with empty value."""
+    store = InMemoryCookieSessionStore()
+    await store.set(42, CachedSession(cookie="C", expires_at=int(time.time()) + 3600),
+                    ttl_seconds=3600)
+    respx.get(f"{BASE}/Module/AccountManager/AccountsList.aspx").mock(
+        return_value=httpx.Response(200, text=_PANDAMASTER_LIST_HTML)
+    )
+    route = respx.post(f"{BASE}/Module/AccountManager/AccountsList.aspx").mock(
+        return_value=httpx.Response(200, text=_PANDAMASTER_LIST_HTML)
+    )
+    async with httpx.AsyncClient(base_url=BASE) as http:
+        c = _client(http, store=store)
+        pairs = await c.search_account("Saud_Doe892")
+    assert pairs == [("11", "22")]
+    body = route.calls.last.request.content.decode()
+    assert "__EVENTTARGET=ctl16" in body
+    assert "__VIEWSTATE=PVS" in body
+    # Critical: VSG must NOT appear in the body when absent from the GET
+    assert "__VIEWSTATEGENERATOR" not in body
+
+
+@respx.mock
+async def test_milkyway_read_balance_omits_viewstategenerator_when_absent():
+    """Same Pandamaster quirk for the milkyway-style balance read."""
+    store = InMemoryCookieSessionStore()
+    await store.set(42, CachedSession(cookie="C", expires_at=int(time.time()) + 3600),
+                    ttl_seconds=3600)
+    # GET returns the AccountsList page WITHOUT __VIEWSTATEGENERATOR
+    respx.get(f"{BASE}/Module/AccountManager/AccountsList.aspx").mock(
+        return_value=httpx.Response(200, text=_PANDAMASTER_LIST_HTML)
+    )
+    # Search POST returns a milkyway-style results row with Balance column
+    search_result_html = """
+    <table>
+      <tr>
+        <td><a onclick="updateSelect( '11,22')">U</a></td>
+        <td>22</td>
+        <td>Saud_Doe892</td>
+        <td>Saud</td>
+        <td>7.50</td>
+        <td>2026-05-30</td>
+        <td>2026-06-01</td>
+        <td>TestPM159</td>
+        <td>Active</td>
+      </tr>
+    </table>
+    """
+    route = respx.post(f"{BASE}/Module/AccountManager/AccountsList.aspx").mock(
+        return_value=httpx.Response(200, text=search_result_html)
+    )
+    async with httpx.AsyncClient(base_url=BASE) as http:
+        c = _client(http, store=store)
+        credit_str = await c.milkyway_read_balance(query="Saud_Doe892")
+    assert credit_str == "7.50"
+    body = route.calls.last.request.content.decode()
+    assert "__VIEWSTATEGENERATOR" not in body
+    assert "txtSearch=Saud_Doe892" in body
+
+
+@respx.mock
+async def test_submit_dialog_omits_viewstategenerator_when_absent():
+    """Dialog pages normally render VSG, but verify the conditional skipping works there too."""
+    store = InMemoryCookieSessionStore()
+    await store.set(42, CachedSession(cookie="C", expires_at=int(time.time()) + 3600),
+                    ttl_seconds=3600)
+    # Dialog HTML missing VSG (hypothetical — defensive guard)
+    respx.get(f"{BASE}/Module/AccountManager/GrantTreasure.aspx?param=TOK").mock(
+        return_value=httpx.Response(
+            200,
+            text="""<form><input type="hidden" name="__VIEWSTATE" value="VS" />
+                    <input type="hidden" name="__EVENTVALIDATION" value="EV" /></form>""",
+        )
+    )
+    route = respx.post(f"{BASE}/Module/AccountManager/GrantTreasure.aspx?param=TOK").mock(
+        return_value=httpx.Response(
+            200, text='<script>showAlter("Confirmed successful","Balance:30");</script>',
+        )
+    )
+    async with httpx.AsyncClient(base_url=BASE) as http:
+        c = _client(http, store=store)
+        text = await c.submit_dialog(
+            dialog_url="Module/AccountManager/GrantTreasure.aspx?param=TOK",
+            extra_fields={"txtAddGold": "1"},
+        )
+    assert "Confirmed successful" in text
+    body = route.calls.last.request.content.decode()
+    assert "__VIEWSTATEGENERATOR" not in body
+    assert "__VIEWSTATE=VS" in body
+    assert "__EVENTVALIDATION=EV" in body
+
+
 @respx.mock
 async def test_request_text_4xx_is_transient_not_terminal():
     """4xx responses that weren't recognized as session-death should be retryable.

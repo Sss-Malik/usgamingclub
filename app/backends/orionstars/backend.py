@@ -107,17 +107,18 @@ class OrionStarsBackend:
         )
         from app.backends._aspnet_cashier.parsers import parse_viewstate
         vs = parse_viewstate(get_body)
-        form = {
+        form: dict[str, str] = {
             "__EVENTTARGET": "ctl07",
             "__EVENTARGUMENT": "",
             "__VIEWSTATE": vs.viewstate,
-            "__VIEWSTATEGENERATOR": vs.viewstate_generator,
             "__EVENTVALIDATION": vs.event_validation or "",
             "txtAccount": username,
             "txtNickName": username,
             "txtLogonPass": pwd,
             "txtLogonPass2": pwd,
         }
+        if vs.viewstate_generator is not None:
+            form["__VIEWSTATEGENERATOR"] = vs.viewstate_generator
         text = await self._client.request_text(
             "POST", "/Module/AccountManager/CreateAccount.aspx",
             params={"time": time_q}, form=form,

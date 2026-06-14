@@ -49,6 +49,28 @@ def test_viewstate_raises_when_required_field_missing():
         parse_viewstate("<form></form>")
 
 
+def test_viewstate_generator_is_none_when_absent():
+    """Pandamaster's default.aspx and AccountsList.aspx omit __VIEWSTATEGENERATOR.
+    The parser must tolerate this and return None rather than raising.
+    Findings doc top-section callout: Pandamaster runs on 443 and omits VSG."""
+    html = """
+    <form id="form1">
+      <input type="hidden" name="__VIEWSTATE" value="dDwxNDc=" />
+      <input type="hidden" name="__SCROLLPOSITIONX" value="0" />
+    </form>
+    """
+    vs = parse_viewstate(html)
+    assert vs.viewstate == "dDwxNDc="
+    assert vs.viewstate_generator is None
+    assert vs.event_validation is None
+
+
+def test_viewstate_still_raises_when_viewstate_itself_missing():
+    """__VIEWSTATE remains mandatory — only the generator becomes optional."""
+    with pytest.raises(ValueError, match="__VIEWSTATE"):
+        parse_viewstate("<form><input type='hidden' name='__VIEWSTATEGENERATOR' value='G' /></form>")
+
+
 # --- sentinel ---
 
 def test_sentinel_success_recharge_redeem_includes_balance_arg():
