@@ -370,3 +370,79 @@ async def test_resolve_ultrapanda_requires_redis():
                 "ultrapanda", credentials=creds, http_client=http,
                 settings=Settings(), redis=None,
             )
+
+
+def test_firekirin_and_pandamaster_in_non_idempotent_drivers():
+    from app.backends.registry import NON_IDEMPOTENT_DRIVERS
+    assert "firekirin" in NON_IDEMPOTENT_DRIVERS
+    assert "pandamaster" in NON_IDEMPOTENT_DRIVERS
+
+
+async def test_resolve_firekirin_returns_milkyway_backend_with_firekirin_prefix(fake_redis):
+    """Firekirin is a registry alias of MilkyWay: same class, different driver_prefix."""
+    import httpx
+    from app.backends.context import GameCredentials
+    from app.backends.milkyway.backend import MilkyWayBackend
+    from app.backends.registry import resolve_backend
+    from app.config import Settings
+    creds = GameCredentials(
+        game_id=200, name="FK",
+        backend_url="https://firekirin.xyz:8888", login_page_url=None,
+        backend_username="u", backend_password="p",
+        api_base_url=None, api_agent_id=None, api_secret_key=None,
+        binding_key=None, backend_driver="firekirin",
+    )
+    settings = Settings(anticaptcha_api_key="testkey")
+    async with httpx.AsyncClient() as http:
+        b = resolve_backend(
+            "firekirin", credentials=creds, http_client=http,
+            settings=settings, redis=fake_redis,
+        )
+    assert isinstance(b, MilkyWayBackend)
+    assert b._client._driver == "firekirin"
+
+
+async def test_resolve_pandamaster_returns_milkyway_backend_with_pandamaster_prefix(fake_redis):
+    """Pandamaster is a registry alias of MilkyWay (runs on default 443, no port)."""
+    import httpx
+    from app.backends.context import GameCredentials
+    from app.backends.milkyway.backend import MilkyWayBackend
+    from app.backends.registry import resolve_backend
+    from app.config import Settings
+    creds = GameCredentials(
+        game_id=201, name="PM",
+        backend_url="https://pandamaster.vip", login_page_url=None,
+        backend_username="u", backend_password="p",
+        api_base_url=None, api_agent_id=None, api_secret_key=None,
+        binding_key=None, backend_driver="pandamaster",
+    )
+    settings = Settings(anticaptcha_api_key="testkey")
+    async with httpx.AsyncClient() as http:
+        b = resolve_backend(
+            "pandamaster", credentials=creds, http_client=http,
+            settings=settings, redis=fake_redis,
+        )
+    assert isinstance(b, MilkyWayBackend)
+    assert b._client._driver == "pandamaster"
+
+
+async def test_resolve_firekirin_requires_credentials(fake_redis):
+    import httpx
+    import pytest
+    from app.backends.base import BackendError
+    from app.backends.context import GameCredentials
+    from app.backends.registry import resolve_backend
+    from app.config import Settings
+    creds = GameCredentials(
+        game_id=200, name="FK",
+        backend_url=None, login_page_url=None,
+        backend_username=None, backend_password=None,
+        api_base_url=None, api_agent_id=None, api_secret_key=None,
+        binding_key=None, backend_driver="firekirin",
+    )
+    async with httpx.AsyncClient() as http:
+        with pytest.raises(BackendError, match="missing_firekirin_credentials"):
+            resolve_backend(
+                "firekirin", credentials=creds, http_client=http,
+                settings=Settings(anticaptcha_api_key="testkey"), redis=fake_redis,
+            )
