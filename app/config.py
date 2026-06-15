@@ -12,7 +12,8 @@ class Settings(BaseSettings):
     env: str = "development"
     log_level: str = "INFO"
 
-    python_signing_secret: str = ""
+    api_secret: str = ""          # inbound request HMAC (Arcadia AUTOMATION_API_SECRET)
+    webhook_secret: str = ""      # outbound webhook HMAC (Arcadia AUTOMATION_WEBHOOK_SECRET)
     app_url: str = "http://127.0.0.1:8000"
 
     db_host: str = "127.0.0.1"
@@ -52,11 +53,7 @@ class Settings(BaseSettings):
 
     @property
     def webhook_url(self) -> str:
-        return f"{self.app_url.rstrip('/')}/webhooks/games/operation"
-
-    @property
-    def ping_url(self) -> str:
-        return f"{self.app_url.rstrip('/')}/webhooks/_ping"
+        return f"{self.app_url.rstrip('/')}/api/automation/webhook"
 
     @property
     def db_dsn(self) -> str:
@@ -74,11 +71,15 @@ def get_settings() -> Settings:
 def require_runtime_settings(settings: Settings) -> None:
     """Fail fast on misconfiguration at service startup.
 
-    Without the shared secret, every inbound trigger 401s and every outbound webhook
+    Without the shared secrets, every inbound request 401s and every outbound webhook
     is rejected — a silent, confusing failure. Surface it loudly at boot instead.
     """
-    if not settings.python_signing_secret:
+    missing = [
+        name for name, val in (("API_SECRET", settings.api_secret),
+                               ("WEBHOOK_SECRET", settings.webhook_secret)) if not val
+    ]
+    if missing:
         raise RuntimeError(
-            "PYTHON_SIGNING_SECRET is not set — inbound triggers and outbound webhooks "
-            "cannot be authenticated. Configure it to match Laravel."
+            f"{', '.join(missing)} not set — inbound requests and outbound webhooks "
+            "cannot be authenticated. Configure them to match Arcadia."
         )
