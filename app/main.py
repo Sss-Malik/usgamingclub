@@ -3,9 +3,11 @@ from contextlib import asynccontextmanager
 
 from arq import create_pool
 from arq.connections import RedisSettings
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+from pydantic import ValidationError
 
-from app.api import health, operations
+from app.api import automation, health
 from app.config import get_settings, require_runtime_settings
 from app.db.engine import get_sessionmaker
 from app.logging import configure_logging, get_logger
@@ -27,9 +29,19 @@ async def lifespan(app: FastAPI):
 
 def create_app() -> FastAPI:
     app = FastAPI(title="Casino Game Service", lifespan=lifespan)
+    register_exception_handlers(app)
     app.include_router(health.router)
-    app.include_router(operations.router)
+    app.include_router(automation.router)
     return app
+
+
+def register_exception_handlers(app: FastAPI) -> None:
+    # The automation endpoints validate the body manually (raw bytes are needed for the
+    # HMAC check first), so a bad body raises pydantic.ValidationError rather than
+    # FastAPI's RequestValidationError. Map it to 422 to mirror normal body validation.
+    @app.exception_handler(ValidationError)
+    async def _on_validation_error(_request: Request, exc: ValidationError) -> JSONResponse:
+        return JSONResponse(status_code=422, content={"detail": exc.errors(include_url=False)})
 
 
 app = create_app()
