@@ -15,7 +15,7 @@ async def test_game_columns_map_arcadia_schema(seeded):
         assert game.api_secret_key == "gvsecret"
         assert game.api_base_url == "https://gv.test"
         # Arcadia games table has NO soft-delete column
-        assert not hasattr(game, "deleted_at") or True  # column simply not present
+        assert "deleted_at" not in Game.__table__.columns
 
 
 @pytest.mark.asyncio
