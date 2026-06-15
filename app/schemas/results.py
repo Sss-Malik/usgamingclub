@@ -20,7 +20,7 @@ class CreateAccountResult(_Result):
 
 
 class ReadBalanceResult(_Result):
-    balance_cents: int = Field(ge=0)
+    balance: float = Field(ge=0)
 
 
 class ResetPasswordResult(_Result):
@@ -28,12 +28,12 @@ class ResetPasswordResult(_Result):
 
 
 class RechargeResult(_Result):
-    balance_cents: int | None = Field(default=None, ge=0)
+    balance: float | None = Field(default=None, ge=0)
 
 
 class RedeemResult(_Result):
-    balance_cents: int | None = Field(default=None, ge=0)
+    balance: float | None = Field(default=None, ge=0)
 
 
 class AgentBalanceResult(_Result):
-    agent_balance_cents: int = Field(ge=0)
+    agent_balance: float = Field(ge=0)

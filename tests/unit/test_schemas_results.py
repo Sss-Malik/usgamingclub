@@ -21,10 +21,11 @@ def test_create_account_rejects_empty_external_id():
         CreateAccountResult(username="u", password="p", external_user_id="")
 
 
-def test_read_balance_requires_non_negative_int():
-    assert ReadBalanceResult(balance_cents=0).balance_cents == 0
+def test_read_balance_requires_non_negative_float():
+    assert ReadBalanceResult(balance=0).balance == 0
+    assert ReadBalanceResult(balance=127.5).balance == 127.5
     with pytest.raises(ValidationError):
-        ReadBalanceResult(balance_cents=-1)
+        ReadBalanceResult(balance=-1)
 
 
 def test_recharge_balance_optional_and_omitted_when_none():
@@ -32,7 +33,7 @@ def test_recharge_balance_optional_and_omitted_when_none():
 
 
 def test_agent_balance_required():
-    assert AgentBalanceResult(agent_balance_cents=100).agent_balance_cents == 100
+    assert AgentBalanceResult(agent_balance=1000.0).agent_balance == 1000.0
     with pytest.raises(ValidationError):
         AgentBalanceResult()
 
