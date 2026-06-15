@@ -2,17 +2,17 @@
 from fastapi import HTTPException, Request
 
 from app.config import get_settings
-from app.security.hmac import verify
+from app.security.hmac import verify_request
 
 
-async def verify_signature(request: Request) -> bytes:
+async def verify_request_signature(request: Request) -> bytes:
     raw = await request.body()
     settings = get_settings()
-    ok = verify(
-        settings.python_signing_secret,
-        request.headers.get("X-Timestamp", ""),
-        request.headers.get("X-Signature", ""),
-        raw,  # verify over the exact raw bytes (byte-exact per contract §1)
+    ok = verify_request(
+        settings.api_secret,
+        request.headers.get("X-Request-Timestamp", ""),
+        request.headers.get("X-Request-Signature", ""),
+        raw,
         replay_window=settings.replay_window_seconds,
     )
     if not ok:
