@@ -1,6 +1,4 @@
 # app/backends/goldentreasure/backend.py
-import math
-
 from app.backends.base import BackendError
 from app.backends.context import BackendContext
 from app.backends.goldentreasure.client import GoldenTreasureClient
@@ -15,12 +13,8 @@ from app.schemas.results import (
 )
 
 
-def _to_cents(value) -> int:
-    return round(float(value) * 100)
-
-
-def _to_dollars(cents: int) -> str:
-    return str(math.ceil(cents / 100))
+def _balance(value) -> float:
+    return float(value)
 
 
 class GoldenTreasureBackend:
@@ -34,7 +28,7 @@ class GoldenTreasureBackend:
         v = data.get("LimitNum")
         if v is None:
             raise BackendError("gtreasure:agent_balance_missing")
-        return AgentBalanceResult(agent_balance_cents=_to_cents(v))
+        return AgentBalanceResult(agent_balance=_balance(v))
 
     # ---- READ_BALANCE ----
 
@@ -43,7 +37,7 @@ class GoldenTreasureBackend:
         data = await self._client.call(
             "/api/account/getPlayerScore", {"account": username},
         )
-        return ReadBalanceResult(balance_cents=_to_cents(data.get("curScore", 0)))
+        return ReadBalanceResult(balance=_balance(data.get("curScore", 0)))
 
     # ---- CREATE_ACCOUNT ----
 
@@ -84,16 +78,13 @@ class GoldenTreasureBackend:
 
     # ---- RECHARGE ----
 
-    async def recharge(
-        self, ctx: BackendContext, *,
-        amount_cents: int, bonus_cents: int, total_credit_cents: int,
-    ) -> RechargeResult:
+    async def recharge(self, ctx: BackendContext, *, amount: int) -> RechargeResult:
         username = _require_username(ctx)
         await self._client.call(
             "/api/account/enterScore",
             {
                 "account": username,
-                "score": _to_dollars(total_credit_cents),
+                "score": str(int(amount)),
                 "remark": "",
                 "user_type": "player",
             },
@@ -104,14 +95,13 @@ class GoldenTreasureBackend:
 
     # ---- REDEEM ----
 
-    async def redeem(self, ctx: BackendContext, *, amount_cents: int) -> RedeemResult:
+    async def redeem(self, ctx: BackendContext, *, amount: int) -> RedeemResult:
         username = _require_username(ctx)
-        dollars = math.ceil(amount_cents / 100)
         await self._client.call(
             "/api/account/enterScore",
             {
                 "account": username,
-                "score": str(-dollars),               # negative score = withdraw
+                "score": str(-int(amount)),               # negative score = withdraw
                 "remark": "",
                 "user_type": "player",
             },
