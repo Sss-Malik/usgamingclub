@@ -5,9 +5,9 @@ from app.operations.result_cache import CachedOutcome, InMemoryResultCache, Redi
 async def test_in_memory_get_set():
     cache = InMemoryResultCache()
     assert await cache.get("k") is None
-    await cache.set("k", CachedOutcome("succeeded", {"balance_cents": 1}, None), 900)
+    await cache.set("k", CachedOutcome("succeeded", {"balance": 1}, None), 900)
     got = await cache.get("k")
-    assert got.status == "succeeded" and got.result == {"balance_cents": 1}
+    assert got.status == "succeeded" and got.result == {"balance": 1}
 
 
 class FakeRedis:

@@ -71,7 +71,7 @@ def _ctx(*, account=None, username=None) -> BackendContext:
 
 async def test_live_agent_balance(backend):
     result = await backend.agent_balance(_ctx())
-    assert result.agent_balance_cents >= 0
+    assert result.agent_balance >= 0
 
 
 async def test_live_read_balance_for_existing_player(backend):
@@ -81,7 +81,7 @@ async def test_live_read_balance_for_existing_player(backend):
         username=player, external_user_id=None,
     )
     result = await backend.read_balance(_ctx(account=account))
-    assert result.balance_cents >= 0
+    assert result.balance >= 0
 
 
 async def test_live_recharge_one_dollar_then_redeem_one_dollar(backend):
@@ -92,9 +92,9 @@ async def test_live_recharge_one_dollar_then_redeem_one_dollar(backend):
     )
     ctx = _ctx(account=account)
     before = await backend.read_balance(ctx)
-    await backend.recharge(ctx, amount_cents=100, bonus_cents=0, total_credit_cents=100)
+    await backend.recharge(ctx, amount=1)
     after_recharge = await backend.read_balance(ctx)
-    assert after_recharge.balance_cents == before.balance_cents + 100
-    await backend.redeem(ctx, amount_cents=100)
+    assert after_recharge.balance == before.balance + 1
+    await backend.redeem(ctx, amount=1)
     after_redeem = await backend.read_balance(ctx)
-    assert after_redeem.balance_cents == before.balance_cents
+    assert after_redeem.balance == before.balance

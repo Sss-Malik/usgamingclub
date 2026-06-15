@@ -22,7 +22,7 @@ def _creds(driver):
 
 
 def _settings():
-    return Settings(python_signing_secret="s")
+    return Settings(api_secret="s", webhook_secret="s")
 
 
 def test_none_or_mock_returns_mock_backend():

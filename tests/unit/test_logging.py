@@ -3,11 +3,11 @@ from app.logging import configure_logging, get_logger, redact_processor, SECRET_
 
 
 def test_redact_masks_secret_keys():
-    event = {"event": "x", "backend_password": "p", "api_secret_key": "k", "balance_cents": 10}
+    event = {"event": "x", "backend_password": "p", "api_secret_key": "k", "balance": 10}
     out = redact_processor(None, None, event)
     assert out["backend_password"] == "***"
     assert out["api_secret_key"] == "***"
-    assert out["balance_cents"] == 10
+    assert out["balance"] == 10
 
 
 def test_password_is_a_secret_key():
