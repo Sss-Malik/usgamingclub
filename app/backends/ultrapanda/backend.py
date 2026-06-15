@@ -13,9 +13,9 @@ from app.schemas.results import (
 )
 
 
-def _cents_to_score(cents: int) -> str:
-    """Format integer cents as a 2-decimal-place dollar string for the `score` field."""
-    return f"{cents / 100:.2f}"
+def _score(amount: int) -> str:
+    """Format a whole-dollar amount as a 2-decimal-place dollar string for `score`."""
+    return f"{int(amount):.2f}"
 
 
 def _raise_for_code(body: dict, *, op: str, driver: str) -> None:
@@ -48,7 +48,7 @@ class UltraPandaBackend:
         limit = body.get("LimitNum")
         if limit is None:
             raise BackendError(f"{self._client._driver}:agent_balance_missing")
-        return AgentBalanceResult(agent_balance_cents=round(float(limit) * 100))
+        return AgentBalanceResult(agent_balance=float(limit))
 
     # ---- READ_BALANCE ----
 
@@ -57,7 +57,7 @@ class UltraPandaBackend:
         body = await self._client.call("/account/getPlayerScore", {"account": account})
         _raise_for_code(body, op="read_balance", driver=self._client._driver)
         cur = body.get("curScore", 0)
-        return ReadBalanceResult(balance_cents=round(float(cur) * 100))
+        return ReadBalanceResult(balance=float(cur))
 
     # ---- RESET_PASSWORD ----
 
@@ -80,32 +80,29 @@ class UltraPandaBackend:
 
     # ---- RECHARGE ----
 
-    async def recharge(
-        self, ctx: BackendContext, *,
-        amount_cents: int, bonus_cents: int, total_credit_cents: int,
-    ) -> RechargeResult:
+    async def recharge(self, ctx: BackendContext, *, amount: int) -> RechargeResult:
         account = self._account_name(ctx)
         body = await self._client.call_throttled(
             "/account/enterScore",
             {
                 "account": account,
-                "score": _cents_to_score(total_credit_cents),
+                "score": _score(amount),
                 "user_type": 0,
             },
             op="recharge",
         )
         _raise_for_code(body, op="recharge", driver=self._client._driver)
-        return RechargeResult(balance_cents=None)
+        return RechargeResult(balance=None)
 
     # ---- REDEEM ----
 
-    async def redeem(self, ctx: BackendContext, *, amount_cents: int) -> RedeemResult:
+    async def redeem(self, ctx: BackendContext, *, amount: int) -> RedeemResult:
         account = self._account_name(ctx)
         body = await self._client.call_throttled(
             "/account/enterScore",
             {
                 "account": account,
-                "score": f"-{_cents_to_score(amount_cents)}",
+                "score": f"-{_score(amount)}",
                 "user_type": 0,
             },
             op="redeem",

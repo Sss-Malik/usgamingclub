@@ -58,7 +58,7 @@ async def _seed_session(store):
 # --- agent_balance ---
 
 @respx.mock
-async def test_agent_balance_returns_LimitNum_as_cents(fake_redis):
+async def test_agent_balance_returns_LimitNum_as_dollars(fake_redis):
     respx.post(f"{BASE}/user/CurScore").mock(
         return_value=httpx.Response(200, json={"code": 20000, "LimitNum": "3.00"})
     )
@@ -66,21 +66,21 @@ async def test_agent_balance_returns_LimitNum_as_cents(fake_redis):
         backend, store = _make_backend(http, fake_redis)
         await _seed_session(store)
         result = await backend.agent_balance(_ctx())
-    assert result.agent_balance_cents == 300
+    assert result.agent_balance == 3.0
 
 
 # --- read_balance ---
 
 @respx.mock
-async def test_read_balance_returns_curScore_as_cents(fake_redis):
+async def test_read_balance_returns_curScore_as_dollars(fake_redis):
     respx.post(f"{BASE}/account/getPlayerScore").mock(
-        return_value=httpx.Response(200, json={"code": 20000, "curScore": 1.50})
+        return_value=httpx.Response(200, json={"code": 20000, "curScore": 127.50})
     )
     async with httpx.AsyncClient(base_url=BASE) as http:
         backend, store = _make_backend(http, fake_redis)
         await _seed_session(store)
         result = await backend.read_balance(_ctx(account=_account("u01")))
-    assert result.balance_cents == 150
+    assert result.balance == 127.5
 
 
 @respx.mock
@@ -147,21 +147,17 @@ async def test_reset_password_sends_all_required_fields_and_returns_pwd(fake_red
 # --- recharge ---
 
 @respx.mock
-async def test_recharge_sends_total_credit_cents_as_score(fake_redis):
-    """Regression guard: must send total_credit_cents (principal + bonus), not amount_cents."""
+async def test_recharge_sends_amount_as_score_with_two_decimal_places(fake_redis):
+    """Wire value must be '50.00' for amount=50."""
     route = respx.post(f"{BASE}/account/enterScore").mock(
         return_value=httpx.Response(200, json={"code": 20000, "message": "进分成功"})
     )
     async with httpx.AsyncClient(base_url=BASE) as http:
         backend, store = _make_backend(http, fake_redis)
         await _seed_session(store)
-        await backend.recharge(
-            _ctx(account=_account("u01")),
-            amount_cents=1200, bonus_cents=1200, total_credit_cents=2400,
-        )
+        await backend.recharge(_ctx(account=_account("u01")), amount=50)
     body = route.calls.last.request.content.decode()
-    assert '"score": "24.00"' in body or '"score":"24.00"' in body
-    assert '"score": "12.00"' not in body and '"score":"12.00"' not in body
+    assert '"score": "50.00"' in body or '"score":"50.00"' in body
     assert '"user_type": 0' in body or '"user_type":0' in body
 
 
@@ -175,10 +171,7 @@ async def test_recharge_insufficient_agent_funds_raises_terminal(fake_redis):
         backend, store = _make_backend(http, fake_redis)
         await _seed_session(store)
         with pytest.raises(BackendError) as ei:
-            await backend.recharge(
-                _ctx(account=_account("u01")),
-                amount_cents=100, bonus_cents=0, total_credit_cents=100,
-            )
+            await backend.recharge(_ctx(account=_account("u01")), amount=1)
     assert ei.value.reason == "ultrapanda:insufficient_agent_funds"
 
 
@@ -192,9 +185,9 @@ async def test_redeem_sends_negative_score(fake_redis):
     async with httpx.AsyncClient(base_url=BASE) as http:
         backend, store = _make_backend(http, fake_redis)
         await _seed_session(store)
-        await backend.redeem(_ctx(account=_account("u01")), amount_cents=150)
+        await backend.redeem(_ctx(account=_account("u01")), amount=50)
     body = route.calls.last.request.content.decode()
-    assert '"score": "-1.50"' in body or '"score":"-1.50"' in body
+    assert '"score": "-50.00"' in body or '"score":"-50.00"' in body
 
 
 @respx.mock
@@ -206,7 +199,7 @@ async def test_redeem_insufficient_player_credit_raises_terminal(fake_redis):
         backend, store = _make_backend(http, fake_redis)
         await _seed_session(store)
         with pytest.raises(BackendError) as ei:
-            await backend.redeem(_ctx(account=_account("u01")), amount_cents=999)
+            await backend.redeem(_ctx(account=_account("u01")), amount=999)
     assert ei.value.reason == "ultrapanda:insufficient_player_credit"
 
 
@@ -221,7 +214,4 @@ async def test_recharge_167_rate_limit_is_transient(fake_redis):
         backend, store = _make_backend(http, fake_redis)
         await _seed_session(store)
         with pytest.raises(TransientBackendError, match="rate_limited"):
-            await backend.recharge(
-                _ctx(account=_account("u01")),
-                amount_cents=100, bonus_cents=0, total_credit_cents=100,
-            )
+            await backend.recharge(_ctx(account=_account("u01")), amount=1)
