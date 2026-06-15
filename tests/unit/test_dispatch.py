@@ -9,13 +9,16 @@ class _Spy:
         self.calls = []
 
     async def recharge(self, ctx, *, amount):
-        self.calls.append(("recharge", amount)); return _R()
+        self.calls.append(("recharge", amount))
+        return _R()
 
     async def redeem(self, ctx, *, amount):
-        self.calls.append(("redeem", amount)); return _R()
+        self.calls.append(("redeem", amount))
+        return _R()
 
     async def read_balance(self, ctx):
-        self.calls.append(("read", None)); return _R()
+        self.calls.append(("read", None))
+        return _R()
 
 
 class _R:

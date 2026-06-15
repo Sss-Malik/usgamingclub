@@ -30,6 +30,22 @@ def test_create_request_needs_full_name():
     assert r.full_name == "John Doe"
 
 
+def test_all_action_request_models_importable():
+    # Every Arcadia action has a request model with the expected required fields.
+    assert FreeplayRequest.model_validate(
+        {"user_id": 1, "backend_name": "x", "username": "p", "amount": 5, "freeplay_id": 3}
+    ).freeplay_id == 3
+    assert WithdrawRequest.model_validate(
+        {"user_id": 1, "backend_name": "x", "username": "p", "amount": 5, "redeem_id": 2}
+    ).redeem_id == 2
+    assert ResetPasswordRequest.model_validate(
+        {"user_id": 1, "backend_name": "x", "username": "p", "reset_password_id": 9}
+    ).reset_password_id == 9
+    assert ReadRequest.model_validate(
+        {"user_id": 1, "backend_name": "x", "username": "p", "read_id": 5}
+    ).read_id == 5
+
+
 def test_operation_roundtrips_via_dict():
     op = Operation.model_validate({
         "action": "recharge", "type": "RECHARGE", "idempotency_key": "recharge:uuid-1",
