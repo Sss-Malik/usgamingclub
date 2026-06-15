@@ -1,7 +1,7 @@
 from app.backends._aspnet_cashier.client import AspnetCashierClient
 from app.backends.base import BackendError
 from app.backends.context import BackendContext
-from app.backends.orionstars.backend import OrionStarsBackend, _to_cents
+from app.backends.orionstars.backend import OrionStarsBackend
 from app.schemas.results import ReadBalanceResult
 
 
@@ -29,4 +29,4 @@ class MilkyWayBackend(OrionStarsBackend):
         else:
             raise BackendError(f"{self._client._driver}:player_not_found")
         credit = await self._client.milkyway_read_balance(query=query)
-        return ReadBalanceResult(balance_cents=_to_cents(credit))
+        return ReadBalanceResult(balance=float(credit))

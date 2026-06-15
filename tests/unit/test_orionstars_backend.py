@@ -62,7 +62,7 @@ async def _seed_session(store):
 # --- read_balance ---
 
 @respx.mock
-async def test_read_balance_posts_getscoreuserid_and_returns_cents():
+async def test_read_balance_posts_getscoreuserid_and_returns_dollars():
     respx.post(f"{BASE}/Module/AccountManager/AccountsList.aspx").mock(
         return_value=httpx.Response(200, text="12.34@0.00|<html/>")
     )
@@ -70,7 +70,7 @@ async def test_read_balance_posts_getscoreuserid_and_returns_cents():
         backend, store = _make_backend(http)
         await _seed_session(store)
         result = await backend.read_balance(_ctx(account=_account(external="21041615:21219386")))
-    assert result.balance_cents == 1234
+    assert result.balance == 12.34
 
 
 @respx.mock
@@ -98,7 +98,7 @@ async def test_read_balance_searches_when_external_user_id_missing():
         backend, store = _make_backend(http)
         await _seed_session(store)
         result = await backend.read_balance(_ctx(account=_account(external=None)))
-    assert result.balance_cents == 750
+    assert result.balance == 7.5
     # Confirm last POST used the UID returned by the search
     last_body = posts.calls[-1].request.content.decode()
     assert "getscoreuserid=111" in last_body
@@ -115,7 +115,7 @@ async def test_agent_balance_scrapes_widget():
         backend, store = _make_backend(http)
         await _seed_session(store)
         result = await backend.agent_balance(_ctx())
-    assert result.agent_balance_cents == 3100
+    assert result.agent_balance == 31.0
 
 
 # --- recharge ---
@@ -149,15 +149,13 @@ async def test_recharge_full_flow_success():
         await _seed_session(store)
         result = await backend.recharge(
             _ctx(account=_account(external="21041615:21219386")),
-            amount_cents=1200, bonus_cents=1200, total_credit_cents=2400,
+            amount=50,
         )
-    # Spec: omit balance_cents (player balance isn't in this response)
-    assert result.balance_cents is None
+    # Spec: omit balance (player balance isn't in this response)
+    assert result.balance is None
     sent = submit.calls.last.request.content.decode()
-    # The form has one amount field; we must send `total_credit_cents` (principal + bonus),
-    # not `amount_cents` — otherwise the bonus is silently dropped on the portal side.
-    assert "txtAddGold=24" in sent             # ceil(2400/100) = 24
-    assert "txtAddGold=12" not in sent         # regression guard: don't send only the principal
+    # Wire value: txtAddGold=50
+    assert "txtAddGold=50" in sent
     assert "__EVENTTARGET=Button1" in sent
     # tourl POST sent the right indices
     tourl_body = posts.calls[0].request.content.decode()
@@ -192,7 +190,7 @@ async def test_recharge_insufficient_agent_funds_raises_terminal():
         with pytest.raises(BackendError) as ei:
             await backend.recharge(
                 _ctx(account=_account(external="111:222")),
-                amount_cents=10_000_000, bonus_cents=0, total_credit_cents=10_000_000,
+                amount=10_000,
             )
     assert ei.value.reason == "orionstars:insufficient_agent_funds"
 
@@ -222,8 +220,8 @@ async def test_redeem_success_uses_ChangeTreasure_and_tourl_1():
     async with httpx.AsyncClient(base_url=BASE) as http:
         backend, store = _make_backend(http)
         await _seed_session(store)
-        result = await backend.redeem(_ctx(account=_account(external="111:222")), amount_cents=100)
-    assert result.balance_cents is None
+        result = await backend.redeem(_ctx(account=_account(external="111:222")), amount=1)
+    assert result.balance is None
     tourl_body = posts.calls[0].request.content.decode()
     assert "tourl=1" in tourl_body
 

@@ -1,4 +1,3 @@
-import math
 from datetime import datetime
 
 from app.backends._aspnet_cashier.client import AspnetCashierClient
@@ -13,14 +12,6 @@ from app.schemas.results import (
     RedeemResult,
     ResetPasswordResult,
 )
-
-
-def _to_cents(value: str | float) -> int:
-    return round(float(value) * 100)
-
-
-def _to_dollars(cents: int) -> str:
-    return str(math.ceil(cents / 100))
 
 
 def _now_query_param() -> str:
@@ -38,14 +29,14 @@ class OrionStarsBackend:
 
     async def agent_balance(self, ctx: BackendContext) -> AgentBalanceResult:
         dollars = await self._client.fetch_agent_balance_dollars()
-        return AgentBalanceResult(agent_balance_cents=dollars * 100)
+        return AgentBalanceResult(agent_balance=float(dollars))
 
     # ---- READ_BALANCE ----
 
     async def read_balance(self, ctx: BackendContext) -> ReadBalanceResult:
         uid, _gid = await self._player_ids(ctx)
         credit, _totalwin = await self._client.post_getscoreuserid(uid)
-        return ReadBalanceResult(balance_cents=_to_cents(credit))
+        return ReadBalanceResult(balance=float(credit))
 
     # ---- RESET_PASSWORD ----
 
@@ -64,29 +55,26 @@ class OrionStarsBackend:
 
     # ---- RECHARGE ----
 
-    async def recharge(
-        self, ctx: BackendContext, *,
-        amount_cents: int, bonus_cents: int, total_credit_cents: int,
-    ) -> RechargeResult:
+    async def recharge(self, ctx: BackendContext, *, amount: int) -> RechargeResult:
         uid, gid = await self._player_ids(ctx)
         dialog_url, _ = await self._client.get_dialog_url(tourl=0, uid=uid, gid=gid)
         text = await self._client.submit_dialog(
             dialog_url=dialog_url,
-            extra_fields={"txtAddGold": _to_dollars(total_credit_cents), "txtReason": ""},
+            extra_fields={"txtAddGold": str(int(amount)), "txtReason": ""},
         )
         kind, args = self._client.classify(text)
         if kind == "success":
-            return RechargeResult(balance_cents=None)   # player balance not in this response
+            return RechargeResult(balance=None)   # player balance not in this response
         raise self._client.business_failure_to_error(args[0] if args else "")
 
     # ---- REDEEM ----
 
-    async def redeem(self, ctx: BackendContext, *, amount_cents: int) -> RedeemResult:
+    async def redeem(self, ctx: BackendContext, *, amount: int) -> RedeemResult:
         uid, gid = await self._player_ids(ctx)
         dialog_url, _ = await self._client.get_dialog_url(tourl=1, uid=uid, gid=gid)
         text = await self._client.submit_dialog(
             dialog_url=dialog_url,
-            extra_fields={"txtAddGold": _to_dollars(amount_cents), "txtReason": ""},
+            extra_fields={"txtAddGold": str(int(amount)), "txtReason": ""},
         )
         kind, args = self._client.classify(text)
         if kind == "success":

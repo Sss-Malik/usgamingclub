@@ -86,7 +86,7 @@ async def test_milkyway_read_balance_parses_row_no_getscoreuserid_call():
         await store.set(43, CachedSession(cookie="S", expires_at=int(time.time()) + 3600),
                         ttl_seconds=3600)
         result = await backend.read_balance(_ctx(account=_account(external="21041615:21219386")))
-    assert result.balance_cents == 45678
+    assert result.balance == 456.78
     # Verify the POST body is the ctl16 search (NOT getscoreuserid).
     sent = posts.calls.last.request.content.decode()
     assert "__EVENTTARGET=ctl16" in sent
@@ -108,6 +108,6 @@ async def test_milkyway_read_balance_uses_username_when_external_missing():
         await store.set(43, CachedSession(cookie="S", expires_at=int(time.time()) + 3600),
                         ttl_seconds=3600)
         result = await backend.read_balance(_ctx(account=_account(external=None)))
-    assert result.balance_cents == 45678
+    assert result.balance == 456.78
     sent = posts.calls.last.request.content.decode()
     assert "txtSearch=Saud_Doe892" in sent
