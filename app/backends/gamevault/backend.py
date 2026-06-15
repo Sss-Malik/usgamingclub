@@ -1,6 +1,4 @@
 # app/backends/gamevault/backend.py
-import math
-
 from app.backends.base import BackendError, TransientBackendError
 from app.backends.context import BackendContext
 from app.backends.gamevault.client import GameVaultClient
@@ -15,16 +13,16 @@ from app.schemas.results import (
 )
 
 
-def _to_cents(value: str | int | float) -> int:
-    return round(float(value) * 100)
+def _to_dollars_str(value: int) -> str:
+    return str(int(value))
 
 
-def _to_cents_opt(value: str | int | float | None) -> int | None:
-    return None if value is None else _to_cents(value)
+def _balance(value) -> float:
+    return float(value)
 
 
-def _to_dollars(cents: int) -> str:
-    return str(math.ceil(cents / 100))
+def _balance_opt(value) -> float | None:
+    return None if value is None else float(value)
 
 
 class GameVaultBackend:
@@ -64,7 +62,7 @@ class GameVaultBackend:
     async def read_balance(self, ctx: BackendContext) -> ReadBalanceResult:
         uid = await self._user_id(ctx)
         data = await self._client.call("/api/external/userBalance", {"user_id": uid})
-        return ReadBalanceResult(balance_cents=_to_cents(data["user_balance"]))
+        return ReadBalanceResult(balance=_balance(data["user_balance"]))
 
     async def reset_password(self, ctx: BackendContext) -> ResetPasswordResult:
         uid = await self._user_id(ctx)
@@ -72,24 +70,22 @@ class GameVaultBackend:
         await self._client.call("/api/external/resetPassword", {"user_id": uid, "login_pwd": pwd})
         return ResetPasswordResult(password=pwd)
 
-    async def recharge(
-        self, ctx: BackendContext, *, amount_cents: int, bonus_cents: int, total_credit_cents: int
-    ) -> RechargeResult:
+    async def recharge(self, ctx: BackendContext, *, amount: int) -> RechargeResult:
         uid = await self._user_id(ctx)
         data = await self._client.call(
             "/api/external/recharge",
-            {"user_id": uid, "amount": _to_dollars(total_credit_cents), "order_id": ctx.idempotency_key},
+            {"user_id": uid, "amount": _to_dollars_str(amount), "order_id": ctx.idempotency_key},
         )
-        return RechargeResult(balance_cents=_to_cents_opt(data.get("user_balance")))
+        return RechargeResult(balance=_balance_opt(data.get("user_balance")))
 
-    async def redeem(self, ctx: BackendContext, *, amount_cents: int) -> RedeemResult:
+    async def redeem(self, ctx: BackendContext, *, amount: int) -> RedeemResult:
         uid = await self._user_id(ctx)
         data = await self._client.call(
             "/api/external/withdraw",
-            {"user_id": uid, "amount": _to_dollars(amount_cents), "order_id": ctx.idempotency_key},
+            {"user_id": uid, "amount": _to_dollars_str(amount), "order_id": ctx.idempotency_key},
         )
-        return RedeemResult(balance_cents=_to_cents_opt(data.get("user_balance")))
+        return RedeemResult(balance=_balance_opt(data.get("user_balance")))
 
     async def agent_balance(self, ctx: BackendContext) -> AgentBalanceResult:
         data = await self._client.call("/api/external/agentBalance", {})
-        return AgentBalanceResult(agent_balance_cents=_to_cents(data["agent_balance"]))
+        return AgentBalanceResult(agent_balance=_balance(data["agent_balance"]))

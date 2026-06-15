@@ -5,7 +5,7 @@ import respx
 
 from app.backends.base import BackendError, TransientBackendError
 from app.backends.context import AccountIdentity, BackendContext, GameCredentials
-from app.backends.gamevault.backend import GameVaultBackend, _to_cents, _to_dollars
+from app.backends.gamevault.backend import GameVaultBackend, _to_dollars_str
 from app.backends.gamevault.client import GameVaultClient
 
 BASE = "https://gv.test"
@@ -31,11 +31,9 @@ def _backend(http):
 
 
 def test_unit_helpers():
-    assert _to_cents("3649.0057") == 364901
-    assert _to_cents("60") == 6000
-    assert _to_dollars(5500) == "55"
-    assert _to_dollars(5510) == "56"   # ceil
-    assert _to_dollars(3050) == "31"   # ceil
+    assert _to_dollars_str(50) == "50"
+    assert _to_dollars_str(100) == "100"
+    assert _to_dollars_str(1) == "1"
 
 
 @respx.mock
@@ -50,26 +48,26 @@ async def test_create_account_missing_user_id_is_transient():
 
 
 @respx.mock
-async def test_read_balance_converts_dollars_to_cents():
+async def test_read_balance_returns_dollars():
     respx.post(f"{BASE}/api/external/userBalance").mock(
-        return_value=httpx.Response(200, json={"code": 0, "msg": "ok", "data": {"user_balance": "60"}, "count": 0})
+        return_value=httpx.Response(200, json={"code": 0, "msg": "ok", "data": {"user_balance": "127.5"}, "count": 0})
     )
     async with httpx.AsyncClient() as http:
         r = await _backend(http).read_balance(_ctx())
-    assert r.balance_cents == 6000
+    assert r.balance == 127.5
 
 
 @respx.mock
-async def test_recharge_sends_ceil_dollars_and_order_id():
+async def test_recharge_sends_dollars_str_and_order_id():
     route = respx.post(f"{BASE}/api/external/recharge").mock(
-        return_value=httpx.Response(200, json={"code": 0, "msg": "ok", "data": {"user_balance": "150000"}, "count": 0})
+        return_value=httpx.Response(200, json={"code": 0, "msg": "ok", "data": {"user_balance": "150.0"}, "count": 0})
     )
     async with httpx.AsyncClient() as http:
-        r = await _backend(http).recharge(_ctx(), amount_cents=5000, bonus_cents=500, total_credit_cents=5510)
+        r = await _backend(http).recharge(_ctx(), amount=50)
     body = route.calls.last.request.content.decode()
-    assert 'name="amount"' in body and "56" in body          # ceil(5510/100)
+    assert 'name="amount"' in body and "50" in body
     assert 'name="order_id"' in body and "idem-1" in body
-    assert r.balance_cents == 15000000
+    assert r.balance == 150.0
 
 
 @respx.mock
@@ -79,7 +77,7 @@ async def test_redeem_user_in_game_raises_backend_error():
     )
     async with httpx.AsyncClient() as http:
         with pytest.raises(BackendError) as ei:
-            await _backend(http).redeem(_ctx(), amount_cents=3000)
+            await _backend(http).redeem(_ctx(), amount=30)
     assert ei.value.reason == "gamevault:10:user_in_game"
 
 
@@ -120,19 +118,19 @@ async def test_user_id_falls_back_to_getUserID_when_external_missing():
         return_value=httpx.Response(200, json={"code": 0, "msg": "ok", "data": {"user_id": "88880212"}, "count": 0})
     )
     bal = respx.post(f"{BASE}/api/external/userBalance").mock(
-        return_value=httpx.Response(200, json={"code": 0, "msg": "ok", "data": {"user_balance": "5"}, "count": 0})
+        return_value=httpx.Response(200, json={"code": 0, "msg": "ok", "data": {"user_balance": "5.0"}, "count": 0})
     )
     async with httpx.AsyncClient() as http:
         r = await _backend(http).read_balance(_ctx(external=None, username="user_no_ext"))
-    assert r.balance_cents == 500
+    assert r.balance == 5.0
     assert 'name="user_id"' in bal.calls.last.request.content.decode()  # resolved id used downstream
 
 
 @respx.mock
-async def test_agent_balance_converts():
+async def test_agent_balance_returns_dollars():
     respx.post(f"{BASE}/api/external/agentBalance").mock(
         return_value=httpx.Response(200, json={"code": 0, "msg": "ok", "data": {"agent_balance": "3649.0057"}, "count": 0})
     )
     async with httpx.AsyncClient() as http:
         r = await _backend(http).agent_balance(_ctx(account=False))
-    assert r.agent_balance_cents == 364901
+    assert r.agent_balance == 3649.0057
