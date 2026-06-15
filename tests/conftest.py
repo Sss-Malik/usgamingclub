@@ -27,99 +27,60 @@ async def session_factory(engine):
 @pytest_asyncio.fixture
 async def seeded(session_factory):
     async with session_factory() as s:
-        s.add(
-            Game(
-                id=7,
-                name="Demo Game",
-                active=True,
-                api_base_url="https://api.example.test",
-                api_agent_id="agent-1",
-                api_secret_key="secret-1",
-                binding_key="bind-1",
-            )
-        )
-        s.add(
-            GameAccount(
-                id=1001,
-                user_id=42,
-                game_id=7,
-                username="plyr_42",
-                password="acct-pw",
-                external_user_id="EXT-42",
-            )
-        )
-        s.add(
-            Game(
-                id=9,
-                name="GameVault Demo",
-                active=True,
-                backend_driver="gamevault",
-                api_base_url="https://gv.test",
-                api_agent_id="11",
-                api_secret_key="gvsecret",
-            )
-        )
-        s.add(
-            Game(id=10, name="GameVault NoCreds", active=True, backend_driver="gamevault"),
-        )
-        s.add(
-            GameAccount(
-                id=2001, user_id=43, game_id=9, username="user020301",
-                password="x", external_user_id="88880212",
-            )
-        )
-        s.add(
-            GameAccount(
-                id=2002, user_id=44, game_id=9, username="user_no_ext",
-                password="x", external_user_id=None,
-            )
-        )
-        s.add(
-            Game(
-                id=11,
-                name="Gameroom",
-                active=True,
-                backend_driver="gameroom",
-                backend_url="https://gr.test",
-                backend_username="TestGR159",
-                backend_password="TestGR1122@",
-            )
-        )
-        s.add(
-            Game(id=12, name="Gameroom NoCreds", active=True, backend_driver="gameroom"),
-        )
-        s.add(
-            GameAccount(
-                id=3001, user_id=51, game_id=11, username="apifull9983654",
-                password="x", external_user_id="2998032",
-            )
-        )
-        s.add(
-            GameAccount(
-                id=3002, user_id=52, game_id=11, username="user_no_ext",
-                password="x", external_user_id=None,
-            )
-        )
-        s.add(
-            Game(
-                id=13,
-                name="Golden Treasure",
-                active=True,
-                backend_driver="goldentreasure",
-                backend_url="https://gt.test",
-                backend_username="Test02Gd1WEB",
-                backend_password="Zaeem@1233",
-            )
-        )
-        s.add(
-            Game(id=14, name="GT NoCreds", active=True, backend_driver="goldentreasure"),
-        )
-        s.add(
-            GameAccount(
-                id=4001, user_id=61, game_id=13, username="apitest01",
-                password="x", external_user_id=None,           # gtreasure ops key on username
-            )
-        )
+        # milkyway (ASP.NET cashier) — game_id 1
+        s.add(Game(
+            id=1, name="milkyway", active=True, backend_driver="milkyway",
+            login_url="https://mw.test/default.aspx",
+            backend_url="https://mw.test/Cashier.aspx",
+            game_url="https://mw.test/", username="TestMW159", password="Test_159872",
+        ))
+        s.add(GameAccount(
+            id=10, user_id=42, game_id=1, username="player_one",
+            password="acct-pw", id_from_backend="uid:gid",
+        ))
+        s.add(GameAccount(
+            id=11, user_id=42, game_id=1, username="deleted_player",
+            password="x", id_from_backend=None,
+            deleted_at=__import__("datetime").datetime(2026, 1, 1),
+        ))
+        # gamevault (HTTP API) — game_id 9
+        s.add(Game(
+            id=9, name="GameVault Demo", active=True, backend_driver="gamevault",
+            api_base_url="https://gv.test", api_agent_id="11", api_secret_key="gvsecret",
+        ))
+        s.add(Game(id=10_0, name="GameVault NoCreds", active=True, backend_driver="gamevault"))
+        s.add(GameAccount(
+            id=2001, user_id=43, game_id=9, username="user020301",
+            password="x", id_from_backend="88880212",
+        ))
+        s.add(GameAccount(
+            id=2002, user_id=44, game_id=9, username="user_no_ext",
+            password="x", id_from_backend=None,
+        ))
+        # gameroom — game_id 11
+        s.add(Game(
+            id=11, name="Gameroom", active=True, backend_driver="gameroom",
+            backend_url="https://gr.test", username="TestGR159", password="TestGR1122@",
+        ))
+        s.add(Game(id=12, name="Gameroom NoCreds", active=True, backend_driver="gameroom"))
+        s.add(GameAccount(
+            id=3001, user_id=51, game_id=11, username="apifull9983654",
+            password="x", id_from_backend="2998032",
+        ))
+        s.add(GameAccount(
+            id=3002, user_id=52, game_id=11, username="user_no_ext",
+            password="x", id_from_backend=None,
+        ))
+        # goldentreasure — game_id 13
+        s.add(Game(
+            id=13, name="Golden Treasure", active=True, backend_driver="goldentreasure",
+            backend_url="https://gt.test", username="Test02Gd1WEB", password="Zaeem@1233",
+        ))
+        s.add(Game(id=14, name="GT NoCreds", active=True, backend_driver="goldentreasure"))
+        s.add(GameAccount(
+            id=4001, user_id=61, game_id=13, username="apitest01",
+            password="x", id_from_backend=None,
+        ))
         await s.commit()
     return session_factory
 
