@@ -33,22 +33,20 @@ class MockBackend:
 
     async def read_balance(self, ctx: BackendContext) -> ReadBalanceResult:
         self._maybe_fail()
-        return ReadBalanceResult(balance_cents=12750)
+        return ReadBalanceResult(balance=127.5)
 
     async def reset_password(self, ctx: BackendContext) -> ResetPasswordResult:
         self._maybe_fail()
         return ResetPasswordResult(password="MockReset123!")
 
-    async def recharge(
-        self, ctx: BackendContext, *, amount_cents: int, bonus_cents: int, total_credit_cents: int
-    ) -> RechargeResult:
+    async def recharge(self, ctx: BackendContext, *, amount: int) -> RechargeResult:
         self._maybe_fail()
-        return RechargeResult(balance_cents=total_credit_cents)
+        return RechargeResult(balance=float(amount))
 
-    async def redeem(self, ctx: BackendContext, *, amount_cents: int) -> RedeemResult:
+    async def redeem(self, ctx: BackendContext, *, amount: int) -> RedeemResult:
         self._maybe_fail()
-        return RedeemResult(balance_cents=0)
+        return RedeemResult(balance=0.0)
 
     async def agent_balance(self, ctx: BackendContext) -> AgentBalanceResult:
         self._maybe_fail()
-        return AgentBalanceResult(agent_balance_cents=100_000)
+        return AgentBalanceResult(agent_balance=1000.0)

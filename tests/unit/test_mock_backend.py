@@ -27,14 +27,19 @@ async def test_create_account_is_deterministic():
     assert r1.password and r1.external_user_id
 
 
-async def test_recharge_echoes_total_credit_as_balance():
-    r = await MockBackend().recharge(_ctx(), amount_cents=5000, bonus_cents=500, total_credit_cents=5500)
-    assert r.balance_cents == 5500
+async def test_recharge_echoes_amount_as_balance():
+    r = await MockBackend().recharge(_ctx(), amount=50)
+    assert r.balance == 50.0
+
+
+async def test_read_balance_returns_127_5():
+    r = await MockBackend().read_balance(_ctx())
+    assert r.balance == 127.5
 
 
 async def test_agent_balance_returns_value():
     r = await MockBackend().agent_balance(_ctx(account=False))
-    assert r.agent_balance_cents >= 0
+    assert r.agent_balance == 1000.0
 
 
 async def test_fail_mode_raises_backend_error():
