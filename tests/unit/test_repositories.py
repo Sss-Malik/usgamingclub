@@ -1,45 +1,35 @@
-# tests/unit/test_repositories.py
-from datetime import datetime
+import pytest
 
-from app.db.models import Game
-from app.db.repositories import (
-    GameAccountsRepository,
-    GameOperationsRepository,
-    GamesRepository,
-)
+from app.db.repositories import GameAccountsRepository, GamesRepository
 
 
-async def test_games_repo_get(seeded):
+@pytest.mark.asyncio
+async def test_get_by_name_returns_game(seeded):
     async with seeded() as s:
-        game = await GamesRepository(s).get(7)
-        assert game is not None and game.api_agent_id == "agent-1"
-        assert await GamesRepository(s).get(999) is None
+        game = await GamesRepository(s).get_by_name("milkyway")
+    assert game is not None and game.backend_driver == "milkyway"
 
 
-async def test_games_repo_skips_soft_deleted(seeded):
+@pytest.mark.asyncio
+async def test_get_by_name_missing_returns_none(seeded):
     async with seeded() as s:
-        s.add(Game(id=8, name="Deleted", active=True, deleted_at=datetime(2026, 1, 1)))
-        await s.commit()
-        assert await GamesRepository(s).get(8) is None
+        assert await GamesRepository(s).get_by_name("nope") is None
 
 
-async def test_accounts_repo_get(seeded):
+@pytest.mark.asyncio
+async def test_get_driver_by_name(seeded):
     async with seeded() as s:
-        acct = await GameAccountsRepository(s).get(1001)
-        assert acct is not None and acct.username == "plyr_42"
-        assert await GameAccountsRepository(s).get(999) is None
+        assert await GamesRepository(s).get_driver_by_name("milkyway") == "milkyway"
 
 
-async def test_operations_repo_get_by_key_returns_none_when_absent(seeded):
+@pytest.mark.asyncio
+async def test_get_account_by_username(seeded):
     async with seeded() as s:
-        assert await GameOperationsRepository(s).get_by_idempotency_key("missing") is None
+        acct = await GameAccountsRepository(s).get_by_username(1, "player_one")
+    assert acct is not None and acct.id_from_backend == "uid:gid"
 
 
-async def test_games_repo_get_driver_returns_string(seeded):
+@pytest.mark.asyncio
+async def test_get_account_by_username_soft_deleted_is_hidden(seeded):
     async with seeded() as s:
-        assert await GamesRepository(s).get_driver(11) == "gameroom"
-
-
-async def test_games_repo_get_driver_returns_none_when_absent(seeded):
-    async with seeded() as s:
-        assert await GamesRepository(s).get_driver(99999) is None
+        assert await GameAccountsRepository(s).get_by_username(1, "deleted_player") is None
