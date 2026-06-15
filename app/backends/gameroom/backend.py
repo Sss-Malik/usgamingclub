@@ -1,6 +1,4 @@
 # app/backends/gameroom/backend.py
-import math
-
 from app.backends.base import BackendError
 from app.backends.context import BackendContext
 from app.backends.gameroom.client import GameroomClient
@@ -18,16 +16,12 @@ from app.schemas.results import (
 )
 
 
-def _to_cents(value) -> int:
-    return round(float(value) * 100)
+def _balance(value) -> float:
+    return float(value)
 
 
-def _to_cents_opt(value) -> int | None:
-    return None if value is None else _to_cents(value)
-
-
-def _to_dollars(cents: int) -> str:
-    return str(math.ceil(cents / 100))
+def _balance_opt(value) -> float | None:
+    return None if value is None else float(value)
 
 
 class GameroomBackend:
@@ -43,14 +37,14 @@ class GameroomBackend:
         value = data.get("money")
         if value is None:
             raise BackendError("gameroom:agent_balance_missing")
-        return AgentBalanceResult(agent_balance_cents=_to_cents(value))
+        return AgentBalanceResult(agent_balance=_balance(value))
 
     # ---- READ_BALANCE ----
 
     async def read_balance(self, ctx: BackendContext) -> ReadBalanceResult:
         pid = await self._player_id(ctx)
         data = await self._client.call("GET", "/api/player/agentMoney", params={"id": pid})
-        return ReadBalanceResult(balance_cents=_to_cents(data.get("balance", 0)))
+        return ReadBalanceResult(balance=_balance(data.get("balance", 0)))
 
     # ---- RESET_PASSWORD ----
 
@@ -65,16 +59,13 @@ class GameroomBackend:
 
     # ---- RECHARGE ----
 
-    async def recharge(
-        self, ctx: BackendContext, *,
-        amount_cents: int, bonus_cents: int, total_credit_cents: int,
-    ) -> RechargeResult:
+    async def recharge(self, ctx: BackendContext, *, amount: int) -> RechargeResult:
         pid = await self._player_id(ctx)
         # Pre-fetch the current agent balance: the server rejects a stale or empty
         # `available_balance` with "Available balance has changed. Please refresh and recharge again."
         # (Verified in production; the findings doc's "value can be stale" note was wrong.)
         snapshot = await self._agent_money(pid)
-        # bonus=0: we already credit `total_credit_cents` via balance; bonus is on top per the doc.
+        # bonus=0: we already credit `amount` via balance; bonus is on top per the doc.
         # remark="": UUIDs have hyphens which fail [A-Za-z0-9]; empty is allowed.
         data = await self._client.call(
             "POST", "/api/player/agentRecharge",
@@ -83,27 +74,27 @@ class GameroomBackend:
                 "available_balance": str(snapshot.get("cusBlance", "")),
                 "opera_type": 0,
                 "bonus": 0,
-                "balance": _to_dollars(total_credit_cents),
+                "balance": str(int(amount)),
                 "remark": "",
             },
         )
-        return RechargeResult(balance_cents=_to_cents_opt(data.get("total_balance")))
+        return RechargeResult(balance=_balance_opt(data.get("total_balance")))
 
     # ---- REDEEM ----
 
-    async def redeem(self, ctx: BackendContext, *, amount_cents: int) -> RedeemResult:
+    async def redeem(self, ctx: BackendContext, *, amount: int) -> RedeemResult:
         pid = await self._player_id(ctx)
         # Pre-fetch the player balance: same staleness validation as recharge applies to
         # `customer_balance`. agentMoney returns both fields in one call.
         snapshot = await self._agent_money(pid)
-        # agentWithdraw success returns no `data` block; treat as success and omit balance_cents.
+        # agentWithdraw success returns no `data` block; treat as success and omit balance.
         await self._client.call(
             "POST", "/api/player/agentWithdraw",
             fields={
                 "id": pid,
                 "customer_balance": str(snapshot.get("balance", "")),
                 "opera_type": 1,
-                "balance": _to_dollars(amount_cents),
+                "balance": str(int(amount)),
                 "remark": "",
             },
         )

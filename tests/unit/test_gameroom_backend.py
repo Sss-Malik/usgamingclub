@@ -7,7 +7,7 @@ import respx
 
 from app.backends.base import BackendError
 from app.backends.context import AccountIdentity, BackendContext, GameCredentials
-from app.backends.gameroom.backend import GameroomBackend, _to_cents, _to_dollars
+from app.backends.gameroom.backend import GameroomBackend
 from app.backends.gameroom.client import GameroomClient
 from app.backends.gameroom.session import InMemorySessionStore
 
@@ -48,15 +48,6 @@ def _mock_login():
     respx.post(f"{BASE}/api/login").mock(return_value=httpx.Response(200, json=_login_ok()))
 
 
-def test_unit_helpers():
-    assert _to_cents("5.00") == 500
-    assert _to_cents("3649.0057") == 364901
-    assert _to_cents(0) == 0
-    assert _to_dollars(500) == "5"
-    assert _to_dollars(510) == "6"        # ceil
-    assert _to_dollars(3050) == "31"      # ceil
-
-
 # ---- AGENT_BALANCE ----
 
 @respx.mock
@@ -66,7 +57,7 @@ async def test_agent_balance_reads_data_money():
         200, json={"status_code": 200, "message": "ok", "data": {"money": "5.00"}}))
     async with httpx.AsyncClient() as http:
         r = await _backend(http).agent_balance(_ctx(account=False))
-    assert r.agent_balance_cents == 500
+    assert r.agent_balance == 5.0
 
 
 @respx.mock
@@ -76,7 +67,7 @@ async def test_agent_balance_falls_back_to_top_level_money():
         200, json={"status_code": 200, "message": "ok", "money": "5.00"}))
     async with httpx.AsyncClient() as http:
         r = await _backend(http).agent_balance(_ctx(account=False))
-    assert r.agent_balance_cents == 500
+    assert r.agent_balance == 5.0
 
 
 @respx.mock
@@ -93,14 +84,14 @@ async def test_agent_balance_missing_value_is_terminal():
 # ---- READ_BALANCE ----
 
 @respx.mock
-async def test_read_balance_uses_external_user_id_and_returns_cents():
+async def test_read_balance_uses_external_user_id_and_returns_dollars():
     _mock_login()
     route = respx.get(f"{BASE}/api/player/agentMoney").mock(return_value=httpx.Response(
         200, json={"status_code": 200, "message": "ok",
                    "data": {"username": "apifull9983654", "balance": 0, "cusBlance": "4.00"}}))
     async with httpx.AsyncClient() as http:
         r = await _backend(http).read_balance(_ctx())
-    assert r.balance_cents == 0
+    assert r.balance == 0.0
     assert dict(route.calls.last.request.url.params) == {"id": "2998032"}
 
 
@@ -118,7 +109,7 @@ async def test_player_id_falls_back_to_userList_exact_match():
         200, json={"status_code": 200, "message": "ok", "data": {"balance": 5}}))
     async with httpx.AsyncClient() as http:
         r = await _backend(http).read_balance(_ctx(external=None, username="user_no_ext"))
-    assert r.balance_cents == 500
+    assert r.balance == 5.0
 
 
 @respx.mock
@@ -178,15 +169,15 @@ async def test_recharge_sends_integer_dollars_with_fresh_agent_snapshot():
         200, json={"status_code": 200, "message": "Recharge successful",
                    "data": {"balance": "1", "bonus": 0, "remark": "", "total_balance": "1.00"}}))
     async with httpx.AsyncClient() as http:
-        r = await _backend(http).recharge(_ctx(), amount_cents=5000, bonus_cents=500, total_credit_cents=5510)
+        r = await _backend(http).recharge(_ctx(), amount=50)
     body = route.calls.last.request.content.decode()
     assert "id=2998032" in body
     assert "available_balance=10.00" in body                                        # fresh from agentMoney
     assert "opera_type=0" in body
     assert "bonus=0" in body
-    assert "balance=56" in body                                                     # ceil(5510/100)
+    assert "balance=50" in body                                                     # wire value "50"
     assert "remark=" in body and "remark=&" in (body + "&")                         # empty
-    assert r.balance_cents == 100                                                   # round("1.00" * 100)
+    assert r.balance == 1.0                                                         # float("1.00")
 
 
 # ---- REDEEM ----
@@ -198,13 +189,13 @@ async def test_redeem_sends_fresh_player_snapshot_succeeds_with_no_data_block():
     route = respx.post(f"{BASE}/api/player/agentWithdraw").mock(return_value=httpx.Response(
         200, json={"status_code": 200, "message": "Withdraw successful"}))
     async with httpx.AsyncClient() as http:
-        r = await _backend(http).redeem(_ctx(), amount_cents=3050)
+        r = await _backend(http).redeem(_ctx(), amount=30)
     body = route.calls.last.request.content.decode()
     assert "id=2998032" in body
     assert "customer_balance=7" in body                                             # fresh from agentMoney
     assert "opera_type=1" in body
-    assert "balance=31" in body                                                     # ceil(3050/100)
-    assert r.balance_cents is None                                                  # response has no data
+    assert "balance=30" in body                                                     # wire value "30"
+    assert r.balance is None                                                        # response has no data
 
 
 @respx.mock
@@ -216,7 +207,7 @@ async def test_redeem_insufficient_user_balance_is_terminal():
                    "message": "Withdrawal amount is greater than customer balance. Please check and withdraw again"}))
     async with httpx.AsyncClient() as http:
         with pytest.raises(BackendError) as ei:
-            await _backend(http).redeem(_ctx(), amount_cents=100)
+            await _backend(http).redeem(_ctx(), amount=1)
     assert ei.value.reason == "gameroom:insufficient_user_balance"
 
 
@@ -231,7 +222,7 @@ async def test_recharge_available_balance_changed_is_terminal_business_error():
                    "message": "Available balance has changed. Please refresh and recharge again"}))
     async with httpx.AsyncClient() as http:
         with pytest.raises(BackendError) as ei:
-            await _backend(http).recharge(_ctx(), amount_cents=100, bonus_cents=0, total_credit_cents=100)
+            await _backend(http).recharge(_ctx(), amount=1)
     assert "Available balance has changed" in ei.value.reason
     assert ei.value.reason.startswith("gameroom:business_error:")
 
