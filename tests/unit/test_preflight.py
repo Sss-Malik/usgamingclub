@@ -3,84 +3,147 @@ import pytest
 from app.preflight.checks import PreflightError, build_context
 
 
+@pytest.mark.asyncio
+async def test_game_resolved_by_name_credentials_mapped(seeded):
+    async with seeded() as s:
+        ctx = await build_context(
+            s, type="READ_BALANCE", user_id=42,
+            backend_name="milkyway", username="player_one",
+        )
+    assert ctx.credentials.name == "milkyway"
+    assert ctx.credentials.login_page_url == "https://mw.test/default.aspx"
+    assert ctx.credentials.backend_username == "TestMW159"
+    assert ctx.credentials.backend_driver == "milkyway"
+    assert ctx.credentials.backend_url == "https://mw.test/Cashier.aspx"
+
+
+@pytest.mark.asyncio
 async def test_account_scoped_context_loads_account(seeded):
     async with seeded() as s:
         ctx = await build_context(
-            s, type="READ_BALANCE", user_id=42, game_id=7, game_account_id=1001
+            s, type="READ_BALANCE", user_id=42,
+            backend_name="milkyway", username="player_one",
         )
-    assert ctx.credentials.api_agent_id == "agent-1"
-    assert ctx.account is not None and ctx.account.username == "plyr_42"
+    assert ctx.account is not None
+    assert ctx.account.username == "player_one"
+    assert ctx.account.external_user_id == "uid:gid"
 
 
+@pytest.mark.asyncio
+async def test_account_external_user_id_maps_from_id_from_backend(seeded):
+    async with seeded() as s:
+        ctx = await build_context(
+            s, type="RECHARGE", user_id=43,
+            backend_name="GameVault Demo", username="user020301",
+        )
+    assert ctx.account.external_user_id == "88880212"
+
+
+@pytest.mark.asyncio
 async def test_create_account_has_no_account(seeded):
     async with seeded() as s:
         ctx = await build_context(
-            s, type="CREATE_ACCOUNT", user_id=42, game_id=7, game_account_id=None
+            s, type="CREATE_ACCOUNT", user_id=42,
+            backend_name="milkyway", username=None,
         )
     assert ctx.account is None
     assert ctx.user_id == 42
 
 
-async def test_missing_game_raises(seeded):
-    async with seeded() as s:
-        with pytest.raises(PreflightError) as ei:
-            await build_context(s, type="AGENT_BALANCE", user_id=None, game_id=999, game_account_id=None)
-    assert "game_not_found" in ei.value.reason
-
-
-async def test_missing_account_raises(seeded):
-    async with seeded() as s:
-        with pytest.raises(PreflightError) as ei:
-            await build_context(s, type="REDEEM", user_id=42, game_id=7, game_account_id=999)
-    assert "game_account_not_found" in ei.value.reason
-
-
-async def test_context_carries_backend_driver_and_idempotency_key(seeded):
-    async with seeded() as s:
-        ctx = await build_context(
-            s, type="READ_BALANCE", idempotency_key="idem-1", user_id=43,
-            game_id=9, game_account_id=2001,
-        )
-    assert ctx.credentials.backend_driver == "gamevault"
-    assert ctx.idempotency_key == "idem-1"
-    assert ctx.account.external_user_id == "88880212"
-
-
-async def test_gamevault_game_missing_credentials_raises(seeded):
-    async with seeded() as s:
-        with pytest.raises(PreflightError) as ei:
-            await build_context(
-                s, type="AGENT_BALANCE", idempotency_key="k", user_id=None,
-                game_id=10, game_account_id=None,
-            )
-    assert "missing_gamevault_credentials" in ei.value.reason
-
-
+@pytest.mark.asyncio
 async def test_create_account_username_flows_into_context(seeded):
     async with seeded() as s:
         ctx = await build_context(
-            s, type="CREATE_ACCOUNT", idempotency_key="k", user_id=43, game_id=9,
-            game_account_id=None, account_username="usr_43",
+            s, type="CREATE_ACCOUNT", user_id=43,
+            backend_name="GameVault Demo", username=None,
+            account_username="usr_43",
         )
     assert ctx.account_username == "usr_43"
     assert ctx.account is None
 
 
-async def test_gameroom_game_missing_credentials_raises(seeded):
+@pytest.mark.asyncio
+async def test_missing_game_raises(seeded):
     async with seeded() as s:
         with pytest.raises(PreflightError) as ei:
             await build_context(
-                s, type="AGENT_BALANCE", idempotency_key="k", user_id=None,
-                game_id=12, game_account_id=None,
+                s, type="AGENT_BALANCE", user_id=None,
+                backend_name="nonexistent_game", username=None,
+            )
+    assert "game_not_found" in ei.value.reason
+
+
+@pytest.mark.asyncio
+async def test_recharge_with_unknown_username_raises(seeded):
+    async with seeded() as s:
+        with pytest.raises(PreflightError) as ei:
+            await build_context(
+                s, type="RECHARGE", user_id=42,
+                backend_name="milkyway", username="ghost_user",
+            )
+    assert "game_account_not_found: ghost_user" in ei.value.reason
+
+
+@pytest.mark.asyncio
+async def test_recharge_with_no_username_raises(seeded):
+    async with seeded() as s:
+        with pytest.raises(PreflightError) as ei:
+            await build_context(
+                s, type="RECHARGE", user_id=42,
+                backend_name="milkyway", username=None,
+            )
+    assert "missing_username" in ei.value.reason
+
+
+@pytest.mark.asyncio
+async def test_freeplay_is_account_scoped(seeded):
+    async with seeded() as s:
+        ctx = await build_context(
+            s, type="FREEPLAY", user_id=42,
+            backend_name="milkyway", username="player_one",
+        )
+    assert ctx.account is not None and ctx.account.username == "player_one"
+
+
+@pytest.mark.asyncio
+async def test_gamevault_missing_credentials_raises(seeded):
+    async with seeded() as s:
+        with pytest.raises(PreflightError) as ei:
+            await build_context(
+                s, type="AGENT_BALANCE", user_id=None,
+                backend_name="GameVault NoCreds", username=None,
+            )
+    assert "missing_gamevault_credentials" in ei.value.reason
+
+
+@pytest.mark.asyncio
+async def test_gameroom_missing_credentials_raises(seeded):
+    async with seeded() as s:
+        with pytest.raises(PreflightError) as ei:
+            await build_context(
+                s, type="AGENT_BALANCE", user_id=None,
+                backend_name="Gameroom NoCreds", username=None,
             )
     assert "missing_gameroom_credentials" in ei.value.reason
 
 
+@pytest.mark.asyncio
+async def test_goldentreasure_missing_credentials_raises(seeded):
+    async with seeded() as s:
+        with pytest.raises(PreflightError) as ei:
+            await build_context(
+                s, type="AGENT_BALANCE", user_id=None,
+                backend_name="GT NoCreds", username=None,
+            )
+    assert "missing_goldentreasure_credentials" in ei.value.reason
+
+
+@pytest.mark.asyncio
 async def test_gameroom_context_carries_credentials(seeded):
     async with seeded() as s:
         ctx = await build_context(
             s, type="READ_BALANCE", idempotency_key="idem-1", user_id=51,
-            game_id=11, game_account_id=3001,
+            backend_name="Gameroom", username="apifull9983654",
         )
     assert ctx.credentials.backend_driver == "gameroom"
     assert ctx.credentials.backend_url == "https://gr.test"
@@ -88,24 +151,26 @@ async def test_gameroom_context_carries_credentials(seeded):
     assert ctx.account.external_user_id == "2998032"
 
 
-async def test_goldentreasure_game_missing_credentials_raises(seeded):
-    async with seeded() as s:
-        with pytest.raises(PreflightError) as ei:
-            await build_context(
-                s, type="AGENT_BALANCE", idempotency_key="k", user_id=None,
-                game_id=14, game_account_id=None,           # game 14: gtreasure, no creds
-            )
-    assert "missing_goldentreasure_credentials" in ei.value.reason
-
-
+@pytest.mark.asyncio
 async def test_goldentreasure_context_carries_credentials(seeded):
     async with seeded() as s:
         ctx = await build_context(
             s, type="READ_BALANCE", idempotency_key="idem-1", user_id=61,
-            game_id=13, game_account_id=4001,
+            backend_name="Golden Treasure", username="apitest01",
         )
     assert ctx.credentials.backend_driver == "goldentreasure"
     assert ctx.credentials.backend_url == "https://gt.test"
     assert ctx.credentials.backend_username == "Test02Gd1WEB"
     assert ctx.account.username == "apitest01"
     assert ctx.account.external_user_id is None
+
+
+@pytest.mark.asyncio
+async def test_context_carries_idempotency_key(seeded):
+    async with seeded() as s:
+        ctx = await build_context(
+            s, type="READ_BALANCE", idempotency_key="idem-1", user_id=43,
+            backend_name="GameVault Demo", username="user020301",
+        )
+    assert ctx.credentials.backend_driver == "gamevault"
+    assert ctx.idempotency_key == "idem-1"
