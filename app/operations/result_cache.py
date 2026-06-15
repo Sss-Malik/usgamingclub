@@ -6,9 +6,11 @@ from typing import Protocol
 
 @dataclass
 class CachedOutcome:
-    status: str               # "succeeded" | "failed"
+    status: str               # "succeeded" | "failed" | "error"
     result: dict | None       # present when succeeded
-    reason: str | None        # present when failed
+    reason: str | None        # present when failed/error
+    # NOTE: only "succeeded" and "failed" are written to the cache. "error" (transient
+    # backend failures + retry_blocked) is never cached so a worker re-run can retry safely.
 
 
 class ResultCache(Protocol):

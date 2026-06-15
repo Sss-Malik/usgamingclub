@@ -11,8 +11,9 @@ from app.operations.dispatch import dispatch
 from app.operations.result_cache import CachedOutcome, InMemoryResultCache, ResultCache
 from app.postflight.effects import apply_post_effects
 from app.preflight.checks import PreflightError, build_context
-from app.schemas.operations import operation_adapter
+from app.schemas.requests import Operation
 from app.webhook.client import deliver_webhook
+from app.webhook.payload import build_webhook_payload
 
 logger = get_logger(__name__)
 
@@ -31,57 +32,53 @@ async def execute_operation(
 ) -> None:
     if result_cache is None:
         result_cache = InMemoryResultCache()
-    key = str(payload.get("idempotency_key", ""))
-    log = logger.bind(idempotency_key=key, phase="received")
 
-    # 0. Retry blocked: arq is re-running a non-idempotent op (worker likely crashed mid-call on
-    # the previous attempt). Report failure now so Laravel finalizes the op in seconds instead of
-    # waiting 10 min for the reaper. The backend MAY have already applied the change — operator
-    # may need to reconcile via the provider's dashboard.
-    if retry_blocked:
-        outcome = CachedOutcome(
-            "failed", None,
-            "retry_blocked: non-idempotent op crashed mid-flight, manual reconcile may be required",
-        )
-        log.warning("operation_retry_blocked", reason=outcome.reason)
-        await _deliver(http_client, settings, key, outcome)
-        return
-
-    # 1. Validate (invalid payloads are reported, never cached).
+    # 1. Parse the normalized op (invalid payloads cannot be correlated → log + drop).
     try:
-        op = operation_adapter.validate_python(payload)
+        op = Operation.model_validate(payload)
     except ValidationError as exc:
-        await _deliver(http_client, settings, key, CachedOutcome("failed", None, f"invalid_payload: {_summarize(exc)}"))
+        logger.error("operation_unparseable_op", error=_summarize(exc))
         return
 
-    log = log.bind(type=op.type, game_id=op.game_id)
+    key = op.idempotency_key
+    log = logger.bind(idempotency_key=key, action=op.action, type=op.type)
+
+    # 0. Retry blocked: a non-idempotent op is being re-run after a crash. Report `error`
+    # so Arcadia finalizes in seconds; the backend is NOT called.
+    if retry_blocked:
+        outcome = CachedOutcome("error", None, "retry_blocked: manual reconcile may be required")
+        log.warning("operation_retry_blocked")
+        await _deliver(http_client, settings, op, outcome, backend_id=None)
+        return
 
     # 2. Replay short-circuit.
     cached = await result_cache.get(key)
     if cached is not None:
         log.bind(phase="cache_hit").info("operation_replay_from_cache", status=cached.status)
-        # NOTE: apply_post_effects is intentionally skipped on replay. It is a no-op today; if it
-        # gains real behavior in Phase 3, revisit whether replays must run it.
-        await _deliver(http_client, settings, key, cached)
+        await _deliver(http_client, settings, op, cached, backend_id=None)
         return
 
-    # 3. Pre-flight (not cached on failure).
+    # 3. Pre-flight (failures reported, not cached).
     try:
         async with session_factory() as session:
             ctx: BackendContext = await build_context(
                 session,
                 type=op.type,
-                game_id=op.game_id,
-                game_account_id=getattr(op, "game_account_id", None),
-                user_id=getattr(op, "user_id", None),
+                backend_name=op.backend_name,
+                username=op.username,
+                user_id=op.user_id,
                 idempotency_key=key,
-                account_username=getattr(op, "account_username", None),
+                account_username=op.account_username,
             )
     except PreflightError as exc:
-        await _deliver(http_client, settings, key, CachedOutcome("failed", None, f"preflight_failed: {exc.reason}"))
+        await _deliver(http_client, settings, op,
+                       CachedOutcome("failed", None, f"preflight_failed: {exc.reason}"),
+                       backend_id=None)
         return
 
-    # 4. Resolve backend (config error -> failure, not cached).
+    backend_id = ctx.credentials.game_id
+
+    # 4. Resolve backend (config error → failure, not cached).
     try:
         backend: GameBackend = resolve(
             ctx.credentials.backend_driver,
@@ -92,52 +89,53 @@ async def execute_operation(
             redis=redis,
         )
     except BackendError as exc:
-        await _deliver(http_client, settings, key, CachedOutcome("failed", None, exc.reason))
+        await _deliver(http_client, settings, op,
+                       CachedOutcome("failed", None, exc.reason), backend_id=backend_id)
         return
 
     # 5. Backend call.
-    log = log.bind(phase="backend_call")
+    log = log.bind(phase="backend_call", backend_id=backend_id)
     try:
         result: BaseModel = await dispatch(backend, op, ctx)
     except TransientBackendError as exc:
         log.warning("operation_backend_transient", reason=exc.reason)
-        await _deliver(http_client, settings, key, CachedOutcome("failed", None, f"backend_error: {exc.reason}"))
-        return  # not cached -> arq re-run retries (order_id dedupe keeps money ops safe)
+        await _deliver(http_client, settings, op,
+                       CachedOutcome("error", None, f"backend_error: {exc.reason}"),
+                       backend_id=backend_id)
+        return  # not cached → arq re-run retries (capped at 1 for non-idempotent drivers)
     except BackendError as exc:
         outcome = CachedOutcome("failed", None, f"backend_error: {exc.reason}")
         await result_cache.set(key, outcome, settings.result_cache_ttl_seconds)
         log.warning("operation_backend_failed", reason=exc.reason)
-        await _deliver(http_client, settings, key, outcome)
+        await _deliver(http_client, settings, op, outcome, backend_id=backend_id)
         return
     except ValidationError as exc:
-        # A malformed backend result is terminal (same inputs -> same error); cache it so a worker
-        # re-run does not re-call the backend (money-op safety for recharge/redeem).
         outcome = CachedOutcome("failed", None, f"invalid_result_payload: {_summarize(exc)}")
         await result_cache.set(key, outcome, settings.result_cache_ttl_seconds)
         log.error("operation_invalid_result", reason=outcome.reason)
-        await _deliver(http_client, settings, key, outcome)
+        await _deliver(http_client, settings, op, outcome, backend_id=backend_id)
         return
-    except Exception:  # noqa: BLE001 - any unexpected error is reported, not cached
+    except Exception:  # noqa: BLE001
         log.exception("operation_unexpected_error")
-        await _deliver(http_client, settings, key, CachedOutcome("failed", None, "backend_error: unexpected"))
+        await _deliver(http_client, settings, op,
+                       CachedOutcome("error", None, "backend_error: unexpected"),
+                       backend_id=backend_id)
         return
 
     outcome = CachedOutcome("succeeded", result.model_dump(exclude_none=True), None)
     await result_cache.set(key, outcome, settings.result_cache_ttl_seconds)
-    log.bind(phase="backend_result").info("operation_succeeded", result_keys=sorted((outcome.result or {}).keys()))
-    await _deliver(http_client, settings, key, outcome)
+    log.bind(phase="backend_result").info("operation_succeeded")
+    await _deliver(http_client, settings, op, outcome, backend_id=backend_id)
     await apply_post_effects(key, op.type, outcome.result or {})
 
 
-async def _deliver(client, settings: Settings, key: str, outcome: CachedOutcome) -> None:
-    if outcome.status == "succeeded":
-        body = {"idempotency_key": key, "status": "succeeded", "result": outcome.result or {}}
-    else:
-        body = {"idempotency_key": key, "status": "failed", "reason": (outcome.reason or "failed")[:255]}
+async def _deliver(client, settings: Settings, op: Operation, outcome: CachedOutcome,
+                   *, backend_id: int | None) -> None:
+    body = build_webhook_payload(op, outcome, backend_id=backend_id)
     await deliver_webhook(
         client,
         settings.webhook_url,
-        settings.python_signing_secret,
+        settings.webhook_secret,
         body,
         max_budget_seconds=settings.webhook_max_budget_seconds,
         backoff_base=settings.webhook_backoff_base,

@@ -1,39 +1,60 @@
 # tests/integration/test_executor_cache.py
+import json
+
 import httpx
 import respx
 
 from app.config import Settings
 from app.operations.executor import execute_operation
 from app.operations.result_cache import CachedOutcome, InMemoryResultCache
+from app.schemas.requests import Operation
 from app.schemas.results import ReadBalanceResult
 
-WEBHOOK = "https://laravel.test/webhooks/games/operation"
+WEBHOOK = "https://arcadia.test/api/automation/webhook"
 
 
 def _settings():
-    return Settings(python_signing_secret="s", app_url="https://laravel.test", webhook_max_budget_seconds=600)
+    return Settings(api_secret="in", webhook_secret="out",
+                    app_url="https://arcadia.test", webhook_max_budget_seconds=600)
+
+
+def _read_payload(key, backend_name="milkyway", username="player_one", read_id=5):
+    return Operation(
+        action="read", type="READ_BALANCE", idempotency_key=key,
+        user_id=42, backend_name=backend_name, username=username,
+        correlation={"read_id": read_id},
+    ).model_dump()
 
 
 @respx.mock
 async def test_cache_hit_short_circuits_backend(seeded):
     route = respx.post(WEBHOOK).mock(return_value=httpx.Response(200, json={"ok": True}))
     cache = InMemoryResultCache()
-    await cache.set("k-cached", CachedOutcome("succeeded", {"balance_cents": 999}, None), 900)
-    payload = {"idempotency_key": "k-cached", "type": "READ_BALANCE", "user_id": 42, "game_id": 7, "game_account_id": 1001}
+    await cache.set("read:cached", CachedOutcome("succeeded", {"balance": 999.0}, None), 900)
     async with httpx.AsyncClient() as client:
-        await execute_operation(payload, session_factory=seeded, http_client=client, settings=_settings(), result_cache=cache)
-    body = route.calls.last.request.content.decode()
-    assert '"balance_cents":999' in body and '"status":"succeeded"' in body
+        await execute_operation(_read_payload("read:cached"), session_factory=seeded,
+                                http_client=client, settings=_settings(), result_cache=cache)
+    body = json.loads(route.calls.last.request.content.decode())
+    assert body["status"] == "success" and body["user_data"] == {"balance": 999.0}
 
 
 @respx.mock
 async def test_success_is_cached(seeded):
     respx.post(WEBHOOK).mock(return_value=httpx.Response(200, json={"ok": True}))
     cache = InMemoryResultCache()
-    payload = {"idempotency_key": "k-new", "type": "READ_BALANCE", "user_id": 42, "game_id": 7, "game_account_id": 1001}
+
+    class GoodBackend:
+        async def read_balance(self, ctx):
+            return ReadBalanceResult(balance=127.5)
+
+    def fake_resolve(driver, **kwargs):
+        return GoodBackend()
+
     async with httpx.AsyncClient() as client:
-        await execute_operation(payload, session_factory=seeded, http_client=client, settings=_settings(), result_cache=cache)
-    cached = await cache.get("k-new")
+        await execute_operation(_read_payload("read:new"), session_factory=seeded,
+                                http_client=client, settings=_settings(),
+                                result_cache=cache, resolve=fake_resolve)
+    cached = await cache.get("read:new")
     assert cached is not None and cached.status == "succeeded"
 
 
@@ -46,18 +67,16 @@ async def test_invalid_result_payload_is_cached(seeded):
 
     class BadBackend:
         async def read_balance(self, ctx):
-            return ReadBalanceResult(balance_cents=-1)  # raises ValidationError (ge=0) on construction
+            return ReadBalanceResult(balance=-1)  # raises ValidationError (ge=0) on construction
 
-    def fake_resolve(driver, *, credentials, http_client, settings, session_store=None, redis=None):
+    def fake_resolve(driver, **kwargs):
         return BadBackend()
 
-    payload = {"idempotency_key": "k-bad", "type": "READ_BALANCE", "user_id": 42, "game_id": 7, "game_account_id": 1001}
     async with httpx.AsyncClient() as client:
-        await execute_operation(
-            payload, session_factory=seeded, http_client=client, settings=_settings(),
-            result_cache=cache, resolve=fake_resolve,
-        )
-    cached = await cache.get("k-bad")
+        await execute_operation(_read_payload("read:bad"), session_factory=seeded,
+                                http_client=client, settings=_settings(),
+                                result_cache=cache, resolve=fake_resolve)
+    cached = await cache.get("read:bad")
     assert cached is not None and cached.status == "failed" and "invalid_result_payload" in cached.reason
 
 
@@ -67,14 +86,12 @@ async def test_gameroom_without_session_store_reports_failure(seeded):
     # must report a clean failure (not crash). Configuration error -> not cached.
     route = respx.post(WEBHOOK).mock(return_value=httpx.Response(200, json={"ok": True}))
     cache = InMemoryResultCache()
-    payload = {"idempotency_key": "gr-no-store", "type": "AGENT_BALANCE", "game_id": 11}
+    payload = _read_payload("gr-no-store", backend_name="Gameroom", username="apifull9983654")
     async with httpx.AsyncClient() as client:
-        await execute_operation(
-            payload, session_factory=seeded, http_client=client, settings=_settings(),
-            result_cache=cache, session_store=None,
-        )
-    body = route.calls.last.request.content.decode()
-    assert '"status":"failed"' in body and "missing_session_store" in body
+        await execute_operation(payload, session_factory=seeded, http_client=client,
+                                settings=_settings(), result_cache=cache, session_store=None)
+    body = json.loads(route.calls.last.request.content.decode())
+    assert body["status"] == "failed" and "missing_session_store" in body["message"]
     assert await cache.get("gr-no-store") is None              # config error -> not cached
 
 
@@ -83,21 +100,19 @@ async def test_goldentreasure_without_redis_reports_failure(seeded):
     # Config error (no Redis injected for a gtreasure game) -> clean failure, NOT cached.
     route = respx.post(WEBHOOK).mock(return_value=httpx.Response(200, json={"ok": True}))
     cache = InMemoryResultCache()
-    payload = {"idempotency_key": "gt-no-redis", "type": "AGENT_BALANCE", "game_id": 13}
+    payload = _read_payload("gt-no-redis", backend_name="Golden Treasure", username="apitest01")
     async with httpx.AsyncClient() as client:
-        await execute_operation(
-            payload, session_factory=seeded, http_client=client, settings=_settings(),
-            result_cache=cache, redis=None,
-        )
-    body = route.calls.last.request.content.decode()
-    assert '"status":"failed"' in body and "missing_redis_client" in body
+        await execute_operation(payload, session_factory=seeded, http_client=client,
+                                settings=_settings(), result_cache=cache, redis=None)
+    body = json.loads(route.calls.last.request.content.decode())
+    assert body["status"] == "failed" and "missing_redis_client" in body["message"]
     assert await cache.get("gt-no-redis") is None        # config error -> not cached
 
 
 @respx.mock
-async def test_retry_blocked_reports_failure_without_calling_backend(seeded):
+async def test_retry_blocked_reports_error_without_calling_backend(seeded):
     # arq retried a non-idempotent op (the previous attempt crashed mid-call). The worker passes
-    # retry_blocked=True; the executor must NOT call the backend and must deliver a clear failure.
+    # retry_blocked=True; the executor must NOT call the backend and must deliver a clear error.
     route = respx.post(WEBHOOK).mock(return_value=httpx.Response(200, json={"ok": True}))
     cache = InMemoryResultCache()
 
@@ -107,22 +122,17 @@ async def test_retry_blocked_reports_failure_without_calling_backend(seeded):
         async def read_balance(self, ctx):
             nonlocal backend_call_count
             backend_call_count += 1
-            from app.schemas.results import ReadBalanceResult
-            return ReadBalanceResult(balance_cents=999)
+            return ReadBalanceResult(balance=999.0)
 
-    def fake_resolve(driver, *, credentials, http_client, settings, session_store=None, redis=None):
+    def fake_resolve(driver, **kwargs):
         return TrackingBackend()
 
-    payload = {"idempotency_key": "rb-1", "type": "READ_BALANCE", "user_id": 42, "game_id": 7,
-               "game_account_id": 1001}
     async with httpx.AsyncClient() as client:
-        await execute_operation(
-            payload, session_factory=seeded, http_client=client, settings=_settings(),
-            result_cache=cache, retry_blocked=True, resolve=fake_resolve,
-        )
+        await execute_operation(_read_payload("rb-1"), session_factory=seeded, http_client=client,
+                                settings=_settings(), result_cache=cache, retry_blocked=True,
+                                resolve=fake_resolve)
     assert backend_call_count == 0                       # backend NOT called
-    body = route.calls.last.request.content.decode()
-    assert '"status":"failed"' in body and "retry_blocked" in body
-    # NOT cached — the operation may have been applied on the prior attempt; we don't want a
-    # later replay (different idempotency_key edge case) to also short-circuit.
+    body = json.loads(route.calls.last.request.content.decode())
+    assert body["status"] == "error" and "Something went wrong" in body["message"]
+    # NOT cached — the operation may have been applied on the prior attempt.
     assert await cache.get("rb-1") is None
