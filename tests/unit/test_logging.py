@@ -76,6 +76,57 @@ def test_vpower_token_and_admin_token_are_redacted():
     assert d["other"] == "visible"
 
 
+def test_arcadia_secret_fields_are_redacted():
+    from app.logging import _redact_in_place
+    d = {
+        "new_password": "p",
+        "amount": 50,
+        "api_secret": "in",
+        "webhook_secret": "out",
+        "X-Webhook-Signature": "abc",
+        "X-Request-Signature": "def",
+    }
+    _redact_in_place(d)
+    assert d["new_password"] == "***"
+    assert d["amount"] == "***"
+    assert d["api_secret"] == "***"
+    assert d["webhook_secret"] == "***"
+    assert d["X-Webhook-Signature"] == "***"
+    assert d["X-Request-Signature"] == "***"
+
+
+def test_account_created_list_is_redacted_recursively():
+    # account_created is a list of dicts in the Arcadia webhook envelope; the whole
+    # field is sensitive, but we ALSO redact nested password fields in case the
+    # `account_created` key is renamed in a future revision.
+    from app.logging import _redact_in_place
+    d = {
+        "account_created": [
+            {"username": "u", "password": "secretpw", "id_from_backend": "x"}
+        ],
+    }
+    _redact_in_place(d)
+    assert d["account_created"] == "***"
+
+
+def test_user_data_dict_is_redacted():
+    from app.logging import _redact_in_place
+    d = {"user_data": {"balance": 127.5}}
+    _redact_in_place(d)
+    assert d["user_data"] == "***"
+
+
+def test_nested_list_of_dicts_redacts_inner_secrets():
+    # If a payload nests a list of dicts under a NON-secret key, nested secrets must
+    # still be redacted.
+    from app.logging import _redact_in_place
+    d = {"events": [{"password": "p", "ok": "visible"}, {"token": "t"}]}
+    _redact_in_place(d)
+    assert d["events"][0]["password"] == "***"
+    assert d["events"][0]["ok"] == "visible"
+    assert d["events"][1]["token"] == "***"
+
+
 def test_configure_logging_runs_and_logger_emits(capsys):
     # Regression: configure_logging() runs on app/worker startup. A bad structlog
     # API name here would crash the service at boot even though the redaction unit

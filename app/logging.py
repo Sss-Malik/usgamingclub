@@ -28,6 +28,15 @@ SECRET_KEYS = {
     # Phase 6: UltraPanda/VBlink (vpower)
     "admin-token",
     "auth_code",
+    # Phase 7: Arcadia integration
+    "new_password",
+    "account_created",
+    "user_data",
+    "amount",
+    "api_secret",
+    "webhook_secret",
+    "x-webhook-signature",
+    "x-request-signature",
 }
 
 
@@ -38,6 +47,10 @@ def _redact_in_place(d: dict) -> None:
             d[key] = "***"
         elif isinstance(value, dict):
             _redact_in_place(value)
+        elif isinstance(value, list):
+            for item in value:
+                if isinstance(item, dict):
+                    _redact_in_place(item)
 
 
 def redact_processor(_logger, _name, event_dict):
