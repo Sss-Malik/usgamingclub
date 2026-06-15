@@ -4,23 +4,17 @@ import hmac
 import time
 
 
-def build_signature(secret: str, timestamp: str, raw_body: str | bytes) -> str:
+def _hex(secret: str, message: bytes) -> str:
+    return hmac.new(secret.encode(), message, hashlib.sha256).hexdigest()
+
+
+def request_signature(secret: str, timestamp: str, raw_body: str | bytes) -> str:
+    """Inbound scheme (Arcadia GameHttpService): HMAC over "{timestamp}.{body}", plain hex."""
     body = raw_body if isinstance(raw_body, (bytes, bytearray)) else raw_body.encode()
-    message = f"{timestamp}.".encode() + body
-    mac = hmac.new(secret.encode(), message, hashlib.sha256).hexdigest()
-    return f"sha256={mac}"
+    return _hex(secret, f"{timestamp}.".encode() + body)
 
 
-def sign(secret: str, raw_body: str | bytes, *, timestamp: int | None = None) -> dict[str, str]:
-    ts = str(timestamp if timestamp is not None else int(time.time()))
-    return {
-        "X-Timestamp": ts,
-        "X-Signature": build_signature(secret, ts, raw_body),
-        "Content-Type": "application/json",
-    }
-
-
-def verify(
+def verify_request(
     secret: str,
     timestamp: str,
     signature: str,
@@ -31,8 +25,6 @@ def verify(
 ) -> bool:
     if not secret or not timestamp or not signature:
         return False
-    # int() is stricter and safer than str.isdigit(): isdigit() accepts unicode
-    # digit forms (e.g. superscripts) that then raise in int(); guard explicitly.
     try:
         ts = int(timestamp)
     except (TypeError, ValueError):
@@ -40,5 +32,17 @@ def verify(
     current = now if now is not None else int(time.time())
     if abs(current - ts) > replay_window:
         return False
-    expected = build_signature(secret, timestamp, raw_body)
-    return hmac.compare_digest(expected, signature)
+    return hmac.compare_digest(request_signature(secret, timestamp, raw_body), signature)
+
+
+def webhook_signature(secret: str, raw_body: str | bytes) -> str:
+    """Outbound scheme (Arcadia AutomationWebhookController): HMAC over the raw body, plain hex."""
+    body = raw_body if isinstance(raw_body, (bytes, bytearray)) else raw_body.encode()
+    return _hex(secret, body)
+
+
+def sign_webhook(secret: str, raw_body: str | bytes) -> dict[str, str]:
+    return {
+        "X-Webhook-Signature": webhook_signature(secret, raw_body),
+        "Content-Type": "application/json",
+    }
