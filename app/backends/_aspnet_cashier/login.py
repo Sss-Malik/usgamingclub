@@ -116,16 +116,22 @@ async def login(
             raise TransientBackendError(f"{driver_prefix}:login_unexpected_{r3.status_code}")
 
         loc = r3.headers.get("Location", "")
-        if loc.startswith("Cashier.aspx"):
+        qs = parse_qs(urlparse(loc).query)
+        errtype = (qs.get("errtype") or [""])[0]
+        landing = urlparse(loc).path.rsplit("/", 1)[-1].lower()
+
+        # Success: the portal redirects an authenticated session to a landing page —
+        # Cashier.aspx on most portals, Store.aspx on OrionStars. Every failure (bad creds,
+        # wrong captcha, server hiccup) instead redirects back to default.aspx, with an
+        # ?errtype=… marker for known errors or bare on a transient hiccup.
+        if loc and landing not in ("", "default.aspx") and not errtype:
             # The ASP.NET_SessionId cookie in our jar is the authenticated one.
             cookie_val = cookies.get(_SESSION_COOKIE)
             if not cookie_val:
                 raise TransientBackendError(f"{driver_prefix}:login_no_session_cookie")
             return cookie_val
 
-        # Failure redirect — parse `errtype` from the query string.
-        qs = parse_qs(urlparse(loc).query)
-        errtype = (qs.get("errtype") or [""])[0]
+        # Failure redirect — classify by `errtype` from the query string.
         last_errtype = errtype
         if errtype == "verifycode":
             continue                                # captcha wrong — restart attempt with fresh GET

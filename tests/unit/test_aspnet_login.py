@@ -39,6 +39,13 @@ def _login_success_response():
     )
 
 
+def _login_success_store_response():
+    # OrionStars redirects a successful login to Store.aspx (not Cashier.aspx).
+    return httpx.Response(
+        301, text="", headers={"Location": "Store.aspx"}
+    )
+
+
 def _login_bad_captcha_response():
     return httpx.Response(
         301, text="", headers={"Location": "default.aspx?errtype=verifycode"}
@@ -74,6 +81,26 @@ async def test_login_happy_path_returns_session_cookie():
     assert "__VIEWSTATE=VS_A" in body
     assert "__EVENTVALIDATION=EV_A" in body
     assert "ddlRole=0" in body
+
+
+@respx.mock
+async def test_login_success_on_store_aspx_landing():
+    """OrionStars redirects a successful login to Store.aspx, not Cashier.aspx.
+
+    Regression for the production bug where OrionStars logins were misclassified as
+    `login_failed_unmapped_errtype:''` because the success check only accepted Cashier.aspx.
+    """
+    respx.get(f"{BASE}/default.aspx").mock(return_value=_login_page_response())
+    respx.get(f"{BASE}/Tools/VerifyImagePage.aspx?12345").mock(return_value=_captcha_image_response())
+    respx.post(f"{BASE}/default.aspx").mock(return_value=_login_success_store_response())
+
+    async with httpx.AsyncClient(base_url=BASE) as http:
+        cookie = await login(
+            http=http, base_url=BASE, username="u", password="p",
+            captcha_solver=FakeCaptchaSolver(answers=["34596"]), max_attempts=1,
+            driver_prefix="orionstars",
+        )
+    assert cookie == "COOKIE_FIRST"
 
 
 @respx.mock
