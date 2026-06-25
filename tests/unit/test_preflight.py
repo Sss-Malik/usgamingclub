@@ -174,3 +174,16 @@ async def test_context_carries_idempotency_key(seeded):
         )
     assert ctx.credentials.backend_driver == "gamevault"
     assert ctx.idempotency_key == "idem-1"
+
+
+@pytest.mark.asyncio
+async def test_yolo_missing_credentials(session_factory):
+    from app.db.models import Game
+    from app.preflight.checks import PreflightError, build_context
+    async with session_factory() as s:
+        s.add(Game(id=77, name="yolo", active=True, backend_driver="yolo"))
+        await s.commit()
+    async with session_factory() as s:
+        with pytest.raises(PreflightError, match="missing_yolo_credentials"):
+            await build_context(s, type="CREATE_ACCOUNT", backend_name="yolo",
+                                username=None, user_id=2, account_username="abc123x")

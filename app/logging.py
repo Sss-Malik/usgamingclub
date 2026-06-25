@@ -37,6 +37,11 @@ SECRET_KEYS = {
     "webhook_secret",
     "x-webhook-signature",
     "x-request-signature",
+    # Phase 8: YOLO777 session cookies + CSRF token
+    "_token",
+    "csrf_token",
+    "laravel_session",
+    "xsrf-token",
 }
 
 

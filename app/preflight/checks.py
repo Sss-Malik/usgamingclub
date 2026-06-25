@@ -48,7 +48,7 @@ async def build_context(
     ):
         raise PreflightError(f"missing_{driver}_credentials")
     if driver in {"gameroom", "goldentreasure", "milkyway", "firekirin", "pandamaster",
-                  "orionstars", "ultrapanda", "vblink"} and not (
+                  "orionstars", "ultrapanda", "vblink", "yolo"} and not (
         game.backend_url and game.username and game.password
     ):
         raise PreflightError(f"missing_{driver}_credentials")
