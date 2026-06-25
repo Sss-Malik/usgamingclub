@@ -141,7 +141,8 @@ def test_configure_logging_runs_and_logger_emits(capsys):
 
 def test_redacts_yolo_session_secrets():
     from app.logging import _redact_in_place
-    d = {"_token": "TOK", "csrf_token": "C", "laravel_session": "S", "keep": "ok"}
+    d = {"_token": "TOK", "csrf_token": "C", "laravel_session": "S", "xsrf-token": "X", "keep": "ok"}
     _redact_in_place(d)
     assert d["_token"] == "***" and d["csrf_token"] == "***" and d["laravel_session"] == "***"
+    assert d["xsrf-token"] == "***"
     assert d["keep"] == "ok"

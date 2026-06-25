@@ -493,3 +493,23 @@ def test_resolve_yolo_missing_creds_raises(fake_redis):
         resolve_backend("yolo", credentials=creds, http_client=httpx.AsyncClient(),
                         settings=Settings(api_secret="a", webhook_secret="b"),
                         session_store=None, redis=fake_redis)
+
+
+def test_resolve_yolo_missing_redis_raises():
+    import httpx
+
+    from app.backends.base import BackendError
+    from app.backends.context import GameCredentials
+    from app.backends.registry import resolve_backend
+    from app.config import Settings
+
+    creds = GameCredentials(
+        game_id=1, name="yolo", backend_url="https://agent.yolo-777.com", login_page_url=None,
+        backend_username="webyolo1", backend_password="Web@@1122",
+        api_base_url=None, api_agent_id=None, api_secret_key=None, binding_key=None,
+        backend_driver="yolo",
+    )
+    with pytest.raises(BackendError, match="missing_redis_client"):
+        resolve_backend("yolo", credentials=creds, http_client=httpx.AsyncClient(),
+                        settings=Settings(api_secret="a", webhook_secret="b"),
+                        session_store=None, redis=None)
