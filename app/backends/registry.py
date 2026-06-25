@@ -16,6 +16,9 @@ from app.backends.orionstars.backend import OrionStarsBackend
 from app.backends.ultrapanda.backend import UltraPandaBackend
 from app.backends.ultrapanda.client import UltraPandaClient
 from app.backends.ultrapanda.session import RedisTokenStore as VPowerTokenStore
+from app.backends.yolo.backend import YoloBackend
+from app.backends.yolo.client import YoloClient
+from app.backends.yolo.session import RedisSessionStore as YoloSessionStore
 from app.captcha.anticaptcha import AntiCaptchaSolver
 from app.config import Settings
 
@@ -41,6 +44,7 @@ NON_IDEMPOTENT_DRIVERS: frozenset[str] = frozenset({
     "gameroom", "goldentreasure",
     "orionstars", "milkyway", "firekirin", "pandamaster",
     "ultrapanda", "vblink",
+    "yolo",
 })
 
 
@@ -155,6 +159,24 @@ def resolve_backend(
                 session_lock_ttl_seconds=settings.vpower_session_lock_ttl_seconds,
                 session_lock_acquire_timeout_seconds=settings.vpower_session_lock_acquire_timeout_seconds,
                 driver_prefix=key,
+            )
+        )
+    if key == "yolo":
+        if not (credentials.backend_url and credentials.backend_username and credentials.backend_password):
+            raise BackendError("missing_yolo_credentials")
+        if redis is None:
+            raise BackendError("missing_redis_client")
+        return YoloBackend(
+            YoloClient(
+                base_url=credentials.backend_url,
+                username=credentials.backend_username,
+                password=credentials.backend_password,
+                http_client=http_client,
+                session_store=YoloSessionStore(redis),
+                game_id=credentials.game_id,
+                session_ttl_seconds=settings.yolo_session_ttl_seconds,
+                login_lock_ttl_seconds=settings.yolo_login_lock_ttl_seconds,
+                login_lock_acquire_timeout_seconds=settings.yolo_login_lock_acquire_timeout_seconds,
             )
         )
     raise BackendError(f"unknown_backend_driver:{driver}")

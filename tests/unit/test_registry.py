@@ -446,3 +446,50 @@ async def test_resolve_firekirin_requires_credentials(fake_redis):
                 "firekirin", credentials=creds, http_client=http,
                 settings=Settings(anticaptcha_api_key="testkey"), redis=fake_redis,
             )
+
+
+def test_yolo_in_non_idempotent_drivers():
+    from app.backends.registry import NON_IDEMPOTENT_DRIVERS
+    assert "yolo" in NON_IDEMPOTENT_DRIVERS
+
+
+def test_resolve_yolo(fake_redis):
+    import httpx
+
+    from app.backends.context import GameCredentials
+    from app.backends.registry import resolve_backend
+    from app.backends.yolo.backend import YoloBackend
+    from app.config import Settings
+
+    creds = GameCredentials(
+        game_id=1, name="yolo", backend_url="https://agent.yolo-777.com", login_page_url=None,
+        backend_username="webyolo1", backend_password="Web@@1122",
+        api_base_url=None, api_agent_id=None, api_secret_key=None, binding_key=None,
+        backend_driver="yolo",
+    )
+    backend = resolve_backend(
+        "yolo", credentials=creds, http_client=httpx.AsyncClient(),
+        settings=Settings(api_secret="a", webhook_secret="b"),
+        session_store=None, redis=fake_redis,
+    )
+    assert isinstance(backend, YoloBackend)
+
+
+def test_resolve_yolo_missing_creds_raises(fake_redis):
+    import httpx
+
+    from app.backends.base import BackendError
+    from app.backends.context import GameCredentials
+    from app.backends.registry import resolve_backend
+    from app.config import Settings
+
+    creds = GameCredentials(
+        game_id=1, name="yolo", backend_url=None, login_page_url=None,
+        backend_username=None, backend_password=None,
+        api_base_url=None, api_agent_id=None, api_secret_key=None, binding_key=None,
+        backend_driver="yolo",
+    )
+    with pytest.raises(BackendError, match="missing_yolo_credentials"):
+        resolve_backend("yolo", credentials=creds, http_client=httpx.AsyncClient(),
+                        settings=Settings(api_secret="a", webhook_secret="b"),
+                        session_store=None, redis=fake_redis)
