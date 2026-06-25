@@ -94,6 +94,30 @@ async def test_login_failure_when_creds_rejected():
 
 
 @respx.mock
+async def test_double_auth_failure_raises_auth_failed():
+    """419 on both the first and the retry write -> BackendError('yolo:auth_failed')."""
+    respx.get(f"{BASE}/admin/auth/login").mock(return_value=httpx.Response(200, text=LOGIN_PAGE))
+    respx.post(f"{BASE}/admin/auth/login").mock(return_value=httpx.Response(200, json={"status": True}))
+    respx.get(f"{BASE}/admin/player_list").mock(return_value=httpx.Response(200, text=ADMIN_PAGE))
+    respx.post(f"{BASE}/admin/dcat-api/form").mock(
+        return_value=httpx.Response(419, json={"message": "CSRF token mismatch"}))
+    async with httpx.AsyncClient() as http:
+        with pytest.raises(BackendError, match="auth_failed"):
+            await _make_client(http).post_form("/admin/dcat-api/form", {"type": 1})
+
+
+@respx.mock
+async def test_get_text_double_auth_failure_raises_auth_failed():
+    respx.get(f"{BASE}/admin/auth/login").mock(return_value=httpx.Response(200, text=LOGIN_PAGE))
+    respx.post(f"{BASE}/admin/auth/login").mock(return_value=httpx.Response(200, json={"status": True}))
+    respx.get(f"{BASE}/admin/player_list").mock(return_value=httpx.Response(200, text=ADMIN_PAGE))
+    respx.get(f"{BASE}/admin/refresh_score").mock(return_value=httpx.Response(419, text=""))
+    async with httpx.AsyncClient() as http:
+        with pytest.raises(BackendError, match="auth_failed"):
+            await _make_client(http).get_text("/admin/refresh_score")
+
+
+@respx.mock
 async def test_get_text_returns_body():
     respx.get(f"{BASE}/admin/auth/login").mock(return_value=httpx.Response(200, text=LOGIN_PAGE))
     respx.post(f"{BASE}/admin/auth/login").mock(return_value=httpx.Response(200, json={"status": True}))
