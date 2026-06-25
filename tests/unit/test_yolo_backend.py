@@ -103,3 +103,11 @@ async def test_recharge_resolves_player_id_via_search_when_uncached():
     await YoloBackend(c).recharge(_ctx(username="apitest102", external_user_id=None), amount=5)
     _path, fields = c.posts[-1]
     assert fields["UserID"] == "922952"  # came from parse_player_row
+
+
+async def test_create_account_requires_username():
+    from app.backends.base import BackendError
+    c = FakeClient(texts={"/admin/player_list": _GRID})
+    with pytest.raises(BackendError, match="account_username_required"):
+        await YoloBackend(c).create_account(_ctx(account_username=None, username=None))
+    assert c.posts == []  # never hit the network
