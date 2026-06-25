@@ -47,9 +47,11 @@ Base URL = game's `backend_url` (`https://agent.yolo-777.com`).
 | Reset pw | `POST /admin/dcat-api/form` | `_form_=App\Admin\Actions\ResetUserPass UserID Accounts password=<pwd>` |
 | Create | `POST /admin/player_list` | `Accounts NickName LogonPass Recharge_Amount=0 RegisterIP=0.0.0.0 _token` |
 
-`_payload_`/`_current_` JSON fields are sent verbatim per the doc (the action mainly reads the
-flat form fields). Player ID (`UserID`) is required for recharge/redeem/reset and is obtained by
-searching `player_list` by account.
+We send the flat form fields the Dcat action actually reads, plus the `_current_` echo field.
+The findings doc notes `_payload_` "was sent but the action primarily reads" the flat fields, so
+**we omit `_payload_`** (add it only if a live write is observed to require it). Player ID
+(`UserID`) is required for recharge/redeem/reset and is obtained by searching `player_list` by
+account.
 
 ### 3.3 Response envelopes (three)
 | Case | HTTP | Body | Mapping |
