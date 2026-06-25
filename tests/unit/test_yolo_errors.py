@@ -27,6 +27,18 @@ def test_validation_password_too_short_terminal():
         map_envelope(422, body)
 
 
+def test_validation_account_invalid_terminal():
+    body = {"status": False, "data": [], "errors": {"Accounts": ["The Accounts format is invalid."]}}
+    with pytest.raises(BackendError, match="yolo:account_invalid"):
+        map_envelope(422, body)
+
+
+def test_validation_field_required_terminal():
+    body = {"status": False, "data": [], "errors": {"password": ["The Password field is required."]}}
+    with pytest.raises(BackendError, match="yolo:field_required"):
+        map_envelope(422, body)
+
+
 def test_server_error_transient():
     with pytest.raises(TransientBackendError):
         map_envelope(500, None)
@@ -42,3 +54,8 @@ def test_auth_failure_detection():
     assert looks_like_auth_failure(419, "", "") is True
     assert looks_like_auth_failure(302, "https://x/admin/auth/login", "") is True
     assert looks_like_auth_failure(200, "", "") is False
+
+
+def test_auth_failure_via_login_page_body():
+    login_page = '<form action="/admin/auth/login"><input name="password" type="password"></form>'
+    assert looks_like_auth_failure(200, "", login_page) is True

@@ -6,7 +6,7 @@ _PATTERNS: list[tuple[str, str]] = [
     ("already been taken", "account_exists"),
     ("format is invalid", "account_invalid"),
     ("at least 6 characters", "too_short"),
-    ("field is required", "field_required"),
+    ("required", "field_required"),
 ]
 
 
