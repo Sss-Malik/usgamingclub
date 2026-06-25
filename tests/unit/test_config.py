@@ -79,3 +79,13 @@ def test_vpower_defaults():
     assert s.vpower_throttle_acquire_timeout_seconds == 10.0
     assert s.vpower_session_lock_ttl_seconds == 10
     assert s.vpower_session_lock_acquire_timeout_seconds == 10.0
+
+
+def test_yolo_settings_defaults(monkeypatch):
+    monkeypatch.setenv("API_SECRET", "a")
+    monkeypatch.setenv("WEBHOOK_SECRET", "b")
+    from app.config import Settings
+    s = Settings()
+    assert s.yolo_session_ttl_seconds == 1800
+    assert s.yolo_login_lock_ttl_seconds == 10
+    assert s.yolo_login_lock_acquire_timeout_seconds == 10.0

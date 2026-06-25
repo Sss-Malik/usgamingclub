@@ -48,6 +48,9 @@ class Settings(BaseSettings):
     vpower_throttle_acquire_timeout_seconds: float = 10.0
     vpower_session_lock_ttl_seconds: int = 10
     vpower_session_lock_acquire_timeout_seconds: float = 10.0
+    yolo_session_ttl_seconds: int = 1800
+    yolo_login_lock_ttl_seconds: int = 10
+    yolo_login_lock_acquire_timeout_seconds: float = 10.0
 
     replay_window_seconds: int = 300
 
