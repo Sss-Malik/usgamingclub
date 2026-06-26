@@ -56,6 +56,13 @@ class YoloBackend:
         await self._client.post_form(_PLAYER_LIST, {
             "Accounts": username, "NickName": username, "LogonPass": pwd,
             "Recharge_Amount": 0, "RegisterIP": "0.0.0.0",
+            # Hidden fields the Dcat create form submits (findings doc §6). The server
+            # overwrites/derives most, but several AccountsInfo columns have no DB default
+            # (verified in prod: LastLogonIP), so the INSERT fails with SQLSTATE 1364 unless
+            # the full browser field set is present. Send them exactly as the UI does.
+            "ChannelID": "", "RegAccounts": "", "AgentID": "", "InsurePass": "", "FaceID": "",
+            "LastLogonIP": "0.0.0.0", "MemberOrder": "", "MemberExp": "", "RegisterMobile": "",
+            "RegisterMachine": "", "BindAgentDate": "", "Nullity": 1,
             "_previous_": f"{self._base()}/admin/player_list",
         })
         # Follow-up search to resolve the new player's UserID (best-effort; None if not indexed yet).

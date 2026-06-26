@@ -96,6 +96,13 @@ async def test_create_account_generates_and_searches():
     create_path, fields = c.posts[0]
     assert create_path == "/admin/player_list"
     assert fields["Accounts"] == "apitest102" and fields["RegisterIP"] == "0.0.0.0"
+    # The AccountsInfo INSERT has columns with no DB default (e.g. LastLogonIP), so the
+    # full hidden-field set the browser submits must be sent or it fails with SQLSTATE 1364.
+    assert fields["LastLogonIP"] == "0.0.0.0"
+    for hidden in ("ChannelID", "RegAccounts", "AgentID", "InsurePass", "FaceID",
+                   "MemberOrder", "MemberExp", "RegisterMobile", "RegisterMachine",
+                   "BindAgentDate", "Nullity"):
+        assert hidden in fields
 
 
 async def test_recharge_resolves_player_id_via_search_when_uncached():
