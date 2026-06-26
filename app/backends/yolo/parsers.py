@@ -7,10 +7,12 @@ _ROW_RE = re.compile(r"<tr\b[^>]*>(.*?)</tr>", re.IGNORECASE | re.DOTALL)
 _TD_RE = re.compile(r"<td\b[^>]*>(.*?)</td>", re.IGNORECASE | re.DOTALL)
 _TAG_RE = re.compile(r"<[^>]+>")
 
-# Column indices in the player_list grid (findings §3). 0 = Action.
-_COL_PLAYER_ID = 1
-_COL_ACCOUNT = 2
-_COL_SCORE = 6
+# Verified against the live player_list grid (the `_pjax` fragment): Player ID is the FIRST
+# cell and the Action column is LAST — the findings doc's "Action first" ordering was wrong.
+# [0]=Player ID  [1]=Account  [2]=NickName  [3]=AgentAccount  [4]=Status  [5]=Player Score …
+_COL_PLAYER_ID = 0
+_COL_ACCOUNT = 1
+_COL_SCORE = 5
 
 
 def _strip(cell: str) -> str:

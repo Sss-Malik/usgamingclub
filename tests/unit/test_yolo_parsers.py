@@ -13,15 +13,15 @@ from app.backends.yolo.parsers import (
 _GRID = """
 <table><tbody>
 <tr>
-  <td><a href="#">edit</a></td>
   <td>922952</td>
   <td><span data-content="apitest102"></span>&nbsp;apitest102</td>
   <td>nick102</td>
   <td>webyolo1</td>
-  <td>Member</td>
+  <td>Not online</td>
   <td>123.45</td>
   <td>1000</td><td>900</td><td>5</td><td>3</td><td>2</td>
-  <td>Normal</td><td>0.0.0.0</td><td>2026-01-01</td><td>2026-06-01</td>
+  <td></td><td>0.0.0.0</td><td>2026-01-01</td><td>2026-06-01</td>
+  <td>Recharge Redeem Reset Password</td>
 </tr>
 </tbody></table>
 """

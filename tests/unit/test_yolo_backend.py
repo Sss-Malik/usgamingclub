@@ -26,11 +26,14 @@ class FakeClient:
         return self._post_result
 
 
+# Real grid layout: [0]=Player ID, [1]=Account, [2]=NickName, [3]=AgentAccount,
+# [4]=Status, [5]=Player Score, …, Action column LAST.
 _GRID = """
 <table><tbody><tr>
-<td>e</td><td>922952</td><td>apitest102</td><td>nick</td><td>ag</td><td>Member</td>
-<td>123.45</td><td>0</td><td>0</td><td>0</td><td>0</td><td>0</td><td>Normal</td>
-<td>0.0.0.0</td><td>d</td><td>d</td></tr></tbody></table>
+<td>922952</td><td>apitest102</td><td>nick</td><td>ag</td><td>Not online</td><td>123.45</td>
+<td>0</td><td>0</td><td>0</td><td>0</td><td>0</td><td></td>
+<td>0.0.0.0</td><td>d</td><td>d</td><td>Recharge Redeem Reset Password</td>
+</tr></tbody></table>
 """
 
 
