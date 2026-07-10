@@ -59,7 +59,7 @@ async def create(request: Request, raw: bytes = Depends(verify_request_signature
         action="create", type="CREATE_ACCOUNT",
         idempotency_key=f"create:{req.user_id}:{req.backend_name}:{_request_ts(request)}",
         user_id=req.user_id, backend_name=req.backend_name,
-        account_username=generate_username(req.full_name),
+        account_username=generate_username(req.full_name, provided=req.username),
     )
     return await _enqueue(request, op)
 
