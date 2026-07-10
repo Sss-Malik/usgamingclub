@@ -72,6 +72,30 @@ def test_create_generates_username(client):
     assert payload["type"] == "CREATE_ACCOUNT" and payload["account_username"].startswith("janedoe")
 
 
+def test_freeplay_uses_recharge_id_as_correlation(client):
+    # Each freeplay attempt (game_recharge row) is a distinct op: key on its unique id,
+    # not the reused freeplay_id, so retries across games are not deduped.
+    body = {"user_id": 10, "backend_name": "milkyway", "username": "p",
+            "amount": 300, "freeplay_id": 15, "freeplay_recharge_id": 18}
+    resp = _post(client, "/freeplay", body)
+    assert resp.status_code == 202
+    _f, payload, job_id = client.fake.jobs[-1]
+    assert job_id == "freeplay:18"
+    assert payload["type"] == "FREEPLAY" and payload["amount"] == 300
+    assert payload["correlation"] == {"freeplay_id": 15, "freeplay_recharge_id": 18}
+
+
+def test_freeplay_falls_back_to_freeplay_id(client):
+    # Backward-compat: an old Arcadia that doesn't send freeplay_recharge_id keys on freeplay_id.
+    body = {"user_id": 10, "backend_name": "milkyway", "username": "p",
+            "amount": 300, "freeplay_id": 15}
+    resp = _post(client, "/freeplay", body)
+    assert resp.status_code == 202
+    _f, payload, job_id = client.fake.jobs[-1]
+    assert job_id == "freeplay:15"
+    assert payload["correlation"] == {"freeplay_id": 15}
+
+
 def test_bad_signature_401(client):
     raw = json.dumps({"user_id": 1, "backend_name": "milkyway", "username": "p",
                       "amount": 5, "transaction_id": "t"})

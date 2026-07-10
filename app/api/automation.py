@@ -103,11 +103,17 @@ async def reset_password(request: Request, raw: bytes = Depends(verify_request_s
 @router.post("/freeplay")
 async def freeplay(request: Request, raw: bytes = Depends(verify_request_signature)) -> Response:
     req = FreeplayRequest.model_validate(json.loads(raw))
+    # Key on the unique per-attempt id (game_recharge row) when Arcadia sends it, so retries of
+    # the same freeplay across games are distinct ops; fall back to freeplay_id otherwise.
+    correlation: dict[str, str | int] = {"freeplay_id": req.freeplay_id}
+    if req.freeplay_recharge_id is not None:
+        correlation["freeplay_recharge_id"] = req.freeplay_recharge_id
+    corr_id = req.freeplay_recharge_id if req.freeplay_recharge_id is not None else req.freeplay_id
     op = Operation(
         action="freeplay", type="FREEPLAY",
-        idempotency_key=f"freeplay:{req.freeplay_id}",
+        idempotency_key=f"freeplay:{corr_id}",
         user_id=req.user_id, backend_name=req.backend_name, username=req.username,
-        amount=req.amount, correlation={"freeplay_id": req.freeplay_id},
+        amount=req.amount, correlation=correlation,
     )
     return await _enqueue(request, op)
 

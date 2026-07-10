@@ -35,6 +35,10 @@ class FreeplayRequest(_In):
     username: str = Field(min_length=1)
     amount: int = Field(ge=0)
     freeplay_id: int
+    # Unique per freeplay attempt (the game_recharge row id). Used as the correlation/idempotency
+    # key so retries of the same freeplay across different games are distinct ops, and so the
+    # webhook can resolve the exact game_recharge row. Optional for backward compatibility.
+    freeplay_recharge_id: int | None = None
 
 
 class ReadRequest(_In):
