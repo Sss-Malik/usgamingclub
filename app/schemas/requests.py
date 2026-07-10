@@ -1,7 +1,7 @@
 # app/schemas/requests.py
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class _In(BaseModel):
@@ -11,7 +11,17 @@ class _In(BaseModel):
 
 
 class CreateRequest(_In):
-    full_name: str = Field(min_length=1)
+    # `username` is the player-chosen base (Arcadia validates it); `full_name` is the legacy seed.
+    # Both optional so either side can deploy first — at least one must be present. The endpoint
+    # re-sanitizes whichever it uses (generate_username), so neither is trusted verbatim.
+    full_name: str | None = None
+    username: str | None = None
+
+    @model_validator(mode="after")
+    def _need_a_seed(self) -> "CreateRequest":
+        if not (self.full_name or self.username):
+            raise ValueError("full_name or username is required")
+        return self
 
 
 class RechargeRequest(_In):

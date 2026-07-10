@@ -1,3 +1,4 @@
+import re
 import json
 import time
 
@@ -64,12 +65,29 @@ def test_recharge_enqueues_202(client):
     assert payload["_max_tries"] == 1
 
 
-def test_create_generates_username(client):
+def test_create_derives_username_from_full_name(client):
+    # Backward-compat: an old Arcadia sends only full_name.
     resp = _post(client, "/create",
                  {"user_id": 7, "full_name": "Jane Doe", "backend_name": "milkyway"})
     assert resp.status_code == 202
     _f, payload, _j = client.fake.jobs[-1]
-    assert payload["type"] == "CREATE_ACCOUNT" and payload["account_username"].startswith("janedoe")
+    assert payload["type"] == "CREATE_ACCOUNT"
+    assert re.fullmatch(r"janedoe[0-9]{3}", payload["account_username"])
+
+
+def test_create_prefers_player_chosen_username(client):
+    resp = _post(client, "/create",
+                 {"user_id": 7, "full_name": "Jane Doe", "username": "cooljane",
+                  "backend_name": "milkyway"})
+    assert resp.status_code == 202
+    _f, payload, _j = client.fake.jobs[-1]
+    # provided username wins over full_name, sanitized + capped + 3 digits
+    assert re.fullmatch(r"cooljane[0-9]{3}", payload["account_username"])
+
+
+def test_create_requires_a_username_or_full_name(client):
+    resp = _post(client, "/create", {"user_id": 7, "backend_name": "milkyway"})
+    assert resp.status_code == 422
 
 
 def test_freeplay_uses_recharge_id_as_correlation(client):

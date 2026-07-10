@@ -41,7 +41,13 @@ def register_exception_handlers(app: FastAPI) -> None:
     # FastAPI's RequestValidationError. Map it to 422 to mirror normal body validation.
     @app.exception_handler(ValidationError)
     async def _on_validation_error(_request: Request, exc: ValidationError) -> JSONResponse:
-        return JSONResponse(status_code=422, content={"detail": exc.errors(include_url=False)})
+        # include_context=False drops each error's `ctx`, which for a model_validator-raised
+        # ValueError holds the raw exception object (not JSON-serializable). Without this a custom
+        # validator would 500 instead of 422. The human-readable `msg` is preserved.
+        return JSONResponse(
+            status_code=422,
+            content={"detail": exc.errors(include_url=False, include_context=False)},
+        )
 
 
 app = create_app()
