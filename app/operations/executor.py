@@ -102,7 +102,12 @@ async def execute_operation(
         await _deliver(http_client, settings, op,
                        CachedOutcome("error", None, f"backend_error: {exc.reason}"),
                        backend_id=backend_id)
-        return  # not cached → arq re-run retries (capped at 1 for non-idempotent drivers)
+        # Terminal for this job: execute_operation_task never raises, so arq does NOT re-run
+        # on a transient error — it only re-runs after a worker crash/job loss (and then
+        # `retry_blocked` caps non-idempotent drivers at one attempt). Arcadia therefore
+        # treats this `error` webhook as final and hands the freeplay/recharge back to the
+        # player. Deliberately NOT cached, so a crash re-run may retry an idempotent driver.
+        return
     except BackendError as exc:
         outcome = CachedOutcome("failed", None, f"backend_error: {exc.reason}")
         await result_cache.set(key, outcome, settings.result_cache_ttl_seconds)
