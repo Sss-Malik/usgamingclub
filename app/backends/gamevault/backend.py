@@ -31,14 +31,17 @@ class GameVaultBackend:
 
     async def _user_id(self, ctx: BackendContext) -> str:
         if ctx.account and ctx.account.external_user_id:
+            ctx.diag.mark_external_user_id(ctx.account.external_user_id)
             return ctx.account.external_user_id
         if ctx.account and ctx.account.username:
             data = await self._client.call(
-                "/api/external/getUserID", {"account_name": ctx.account.username}
+                "/api/external/getUserID", {"account_name": ctx.account.username},
+                step="resolve.user_id", phase="resolve",
             )
             user_id = data.get("user_id")
             if not user_id:
                 raise BackendError("user_id_unresolved")
+            ctx.diag.mark_external_user_id(str(user_id))
             return str(user_id)
         raise BackendError("user_id_unresolved")
 
@@ -47,7 +50,8 @@ class GameVaultBackend:
             raise BackendError("account_username_required")
         pwd = generate_memorable_password()
         data = await self._client.call(
-            "/api/external/addUser", {"account": ctx.account_username, "login_pwd": pwd}
+            "/api/external/addUser", {"account": ctx.account_username, "login_pwd": pwd},
+            step="addUser.post", phase="primary",
         )
         user_id = data.get("user_id")
         if not user_id:
@@ -55,19 +59,26 @@ class GameVaultBackend:
             # transient (not cached) so a re-run can recover; a same-username retry that already
             # exists surfaces as a terminal account_exists from GameVault.
             raise TransientBackendError("gamevault_missing_user_id")
+        ctx.diag.mark_external_user_id(str(user_id))
         return CreateAccountResult(
             username=ctx.account_username, password=pwd, external_user_id=str(user_id)
         )
 
     async def read_balance(self, ctx: BackendContext) -> ReadBalanceResult:
         uid = await self._user_id(ctx)
-        data = await self._client.call("/api/external/userBalance", {"user_id": uid})
+        data = await self._client.call(
+            "/api/external/userBalance", {"user_id": uid},
+            step="balance.read", phase="primary",
+        )
         return ReadBalanceResult(balance=_balance(data["user_balance"]))
 
     async def reset_password(self, ctx: BackendContext) -> ResetPasswordResult:
         uid = await self._user_id(ctx)
         pwd = generate_memorable_password()
-        await self._client.call("/api/external/resetPassword", {"user_id": uid, "login_pwd": pwd})
+        await self._client.call(
+            "/api/external/resetPassword", {"user_id": uid, "login_pwd": pwd},
+            step="reset.post", phase="primary",
+        )
         return ResetPasswordResult(password=pwd)
 
     async def recharge(self, ctx: BackendContext, *, amount: int) -> RechargeResult:
@@ -75,16 +86,24 @@ class GameVaultBackend:
         data = await self._client.call(
             "/api/external/recharge",
             {"user_id": uid, "amount": _to_dollars_str(amount), "order_id": ctx.idempotency_key},
+            step="recharge.post", phase="primary",
         )
-        return RechargeResult(balance=_balance_opt(data.get("user_balance")))
+        balance = _balance_opt(data.get("user_balance"))
+        if balance is not None:
+            ctx.diag.mark_balance_after(balance)
+        return RechargeResult(balance=balance)
 
     async def redeem(self, ctx: BackendContext, *, amount: int) -> RedeemResult:
         uid = await self._user_id(ctx)
         data = await self._client.call(
             "/api/external/withdraw",
             {"user_id": uid, "amount": _to_dollars_str(amount), "order_id": ctx.idempotency_key},
+            step="withdraw.post", phase="primary",
         )
-        return RedeemResult(balance=_balance_opt(data.get("user_balance")))
+        balance = _balance_opt(data.get("user_balance"))
+        if balance is not None:
+            ctx.diag.mark_balance_after(balance)
+        return RedeemResult(balance=balance)
 
     async def agent_balance(self, ctx: BackendContext) -> AgentBalanceResult:
         data = await self._client.call("/api/external/agentBalance", {})

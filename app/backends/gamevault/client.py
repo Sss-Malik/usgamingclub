@@ -29,31 +29,38 @@ class GameVaultClient:
         ).hexdigest()
         return {"agent_id": self._agent_id, "timestamp": ts, "token": token}
 
-    async def call(self, path: str, fields: dict[str, str]) -> dict:
+    async def call(self, path: str, fields: dict[str, str], *,
+                    step: str = "primary", phase: str = "primary") -> dict:
         form = {**self._auth_fields(), **{k: str(v) for k, v in fields.items()}}
         # Force multipart/form-data with plain form fields (filename=None).
         multipart = {k: (None, v) for k, v in form.items()}
         url = f"{self._base_url}{path}"
-        try:
-            resp = await self._http.post(url, files=multipart)
-        except httpx.HTTPError as exc:
-            raise TransientBackendError(f"gamevault_transport:{type(exc).__name__}") from exc
+        async with self._diag.step(step, phase=phase):
+            try:
+                resp = await self._http.post(url, files=multipart)
+            except httpx.HTTPError as exc:
+                raise TransientBackendError(f"gamevault_transport:{type(exc).__name__}") from exc
 
-        if resp.status_code in (408, 429) or resp.status_code >= 500:
-            raise TransientBackendError(f"gamevault_http_{resp.status_code}")
-        if resp.status_code >= 300:
-            raise BackendError(f"gamevault_http_{resp.status_code}")
+            if resp.status_code in (408, 429) or resp.status_code >= 500:
+                raise TransientBackendError(f"gamevault_http_{resp.status_code}",
+                                             provider_http_status=resp.status_code)
+            if resp.status_code >= 300:
+                raise BackendError(f"gamevault_http_{resp.status_code}",
+                                    provider_http_status=resp.status_code)
 
-        try:
-            body = resp.json()
-        except ValueError as exc:
-            raise TransientBackendError("gamevault_bad_response") from exc
+            try:
+                body = resp.json()
+            except ValueError as exc:
+                raise TransientBackendError("gamevault_bad_response",
+                                             provider_http_status=resp.status_code) from exc
 
-        code = body.get("code")
-        if code == 0:
-            data = body.get("data")
-            return data if isinstance(data, dict) else {}
-        reason = map_code(code, body.get("msg", ""))
-        if code in TRANSIENT_CODES:
-            raise TransientBackendError(reason)
-        raise BackendError(reason)
+            code = body.get("code")
+            if code == 0:
+                data = body.get("data")
+                return data if isinstance(data, dict) else {}
+            slug, pcode, pmsg = map_code(code, body.get("msg", ""))
+            if code in TRANSIENT_CODES:
+                raise TransientBackendError(slug, provider_http_status=resp.status_code,
+                                             provider_code=pcode, provider_message=pmsg)
+            raise BackendError(slug, provider_http_status=resp.status_code,
+                                provider_code=pcode, provider_message=pmsg)
