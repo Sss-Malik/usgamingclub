@@ -28,8 +28,37 @@ def _message(outcome: CachedOutcome) -> str:
     return reason or GENERIC_MESSAGE
 
 
+def assemble_diagnostics(
+    *, op_id, idempotency_key, attempt, cache_hit, duration_ms,
+    snapshot=None, failure_kind=None, reason=None, provider=None,
+) -> dict:
+    snap = snapshot or {}
+    diag: dict = {
+        "idempotency_key": idempotency_key,
+        "attempt": attempt,
+        "cache_hit": cache_hit,
+        "duration_ms": duration_ms,
+        "steps": snap.get("steps", []),
+    }
+    if op_id is not None:
+        diag["op_id"] = op_id
+    for key in ("session_reuse", "external_user_id", "balance_before", "balance_after"):
+        value = snap.get(key)
+        if value is not None:
+            diag[key] = value
+    if failure_kind is not None:
+        diag["failure_kind"] = failure_kind
+    if reason is not None:
+        diag["reason"] = reason
+    if provider:
+        pruned = {k: v for k, v in provider.items() if v is not None}
+        if pruned:
+            diag["provider"] = pruned
+    return diag
+
+
 def build_webhook_payload(
-    op: Operation, outcome: CachedOutcome, *, backend_id: int | None
+    op: Operation, outcome: CachedOutcome, *, backend_id: int | None, diagnostics: dict | None = None
 ) -> dict:
     status = _status(outcome)
     body: dict = {
@@ -45,6 +74,11 @@ def build_webhook_payload(
 
     # Correlation ids are always echoed so Arcadia can resolve the local row.
     body.update(op.correlation)
+
+    if op.op_id is not None:
+        body["op_id"] = op.op_id
+    if diagnostics is not None:
+        body["diagnostics"] = diagnostics
 
     # Money ops echo the original (whole-dollar) amount for Arcadia's amount-verification.
     if op.action in ("recharge", "redeem", "freeplay") and op.amount is not None:
