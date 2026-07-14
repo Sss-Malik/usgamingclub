@@ -71,14 +71,21 @@ async def execute_operation(
 
     async def deliver(outcome, *, backend_id, failure_kind=None, provider=None,
                       cache_hit=False, snapshot=None):
-        duration_ms = int((time.monotonic() - started) * 1000)
-        snap = snapshot if snapshot is not None else recorder.snapshot()
-        reason = _public_reason(outcome.reason) if failure_kind else None
-        diagnostics = assemble_diagnostics(
-            op_id=op.op_id, idempotency_key=key, attempt=attempt, cache_hit=cache_hit,
-            duration_ms=duration_ms, snapshot=snap, failure_kind=failure_kind,
-            reason=reason, provider=provider,
-        )
+        # Diagnostics assembly is observational only — a bug in it must NEVER suppress the
+        # webhook. Isolate it behind its own try/except; on failure fall back to
+        # diagnostics=None (build_webhook_payload + deliver_webhook always run below).
+        try:
+            duration_ms = int((time.monotonic() - started) * 1000)
+            snap = snapshot if snapshot is not None else recorder.snapshot()
+            reason = _public_reason(outcome.reason) if failure_kind else None
+            diagnostics = assemble_diagnostics(
+                op_id=op.op_id, idempotency_key=key, attempt=attempt, cache_hit=cache_hit,
+                duration_ms=duration_ms, snapshot=snap, failure_kind=failure_kind,
+                reason=reason, provider=provider,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("operation_diagnostics_assembly_failed", error=str(exc))
+            diagnostics = None
         body = build_webhook_payload(op, outcome, backend_id=backend_id, diagnostics=diagnostics)
         await deliver_webhook(
             http_client, settings.webhook_url, settings.webhook_secret, body,
@@ -177,13 +184,16 @@ async def execute_operation(
         await deliver(outcome, backend_id=backend_id, failure_kind="backend", provider=provider)
         return
     except ValidationError as exc:
+        snap = recorder.snapshot()
         detail = {"failure_kind": "invalid_result", "provider": None,
-                  "external_user_id": None, "balance_before": None, "balance_after": None}
+                  "external_user_id": snap.get("external_user_id"),
+                  "balance_before": snap.get("balance_before"),
+                  "balance_after": snap.get("balance_after")}
         outcome = CachedOutcome("failed", None, f"invalid_result_payload: {_summarize(exc)}",
                                 detail=detail)
         await result_cache.set(key, outcome, settings.result_cache_ttl_seconds)
         log.error("operation_invalid_result", reason=outcome.reason)
-        await deliver(outcome, backend_id=backend_id, failure_kind="invalid_result")
+        await deliver(outcome, backend_id=backend_id, failure_kind="invalid_result", snapshot=snap)
         return
     except Exception:  # noqa: BLE001
         log.exception("operation_unexpected_error")

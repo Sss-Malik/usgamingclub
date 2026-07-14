@@ -92,7 +92,7 @@ class OrionStarsBackend:
         # GET the form to scrape viewstate (CreateAccount has EnableEventValidation=true).
         get_body = await self._client.request_text(
             "GET", "/Module/AccountManager/CreateAccount.aspx", params={"time": time_q},
-            step="create.get", phase="create",
+            step="create.get", phase="primary",
         )
         from app.backends._aspnet_cashier.parsers import parse_viewstate
         vs = parse_viewstate(get_body)
@@ -111,7 +111,7 @@ class OrionStarsBackend:
         text = await self._client.request_text(
             "POST", "/Module/AccountManager/CreateAccount.aspx",
             params={"time": time_q}, form=form,
-            step="create.post", phase="create",
+            step="create.post", phase="primary",
         )
         kind, args = self._client.classify(text)
         if kind != "success":

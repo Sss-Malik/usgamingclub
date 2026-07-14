@@ -431,7 +431,7 @@ async def test_request_dead_session_retry_records_recovery_step_and_relogin_even
         c = _client(http, store=store, diagnostics=rec)
         body = await c.request_text(
             "POST", "/Module/AccountManager/AccountsList.aspx",
-            form={"getscoreuserid": "1"}, step="balance.getscore_post", phase="balance",
+            form={"getscoreuserid": "1"}, step="balance.getscore_post", phase="primary",
         )
     assert body.startswith("9.99@0.00|")
     snap = rec.snapshot()
@@ -509,9 +509,9 @@ async def test_create_account_helper_records_create_get_and_post_steps():
     async with httpx.AsyncClient(base_url=BASE) as http:
         c = _client(http, store=store, diagnostics=rec)
         await c.request_text("GET", "/Module/AccountManager/CreateAccount.aspx",
-                             params={"time": "x"}, step="create.get", phase="create")
+                             params={"time": "x"}, step="create.get", phase="primary")
         await c.request_text("POST", "/Module/AccountManager/CreateAccount.aspx",
-                             params={"time": "x"}, form={}, step="create.post", phase="create")
+                             params={"time": "x"}, form={}, step="create.post", phase="primary")
     names = [s["name"] for s in rec.snapshot()["steps"]]
     assert "create.get" in names
     assert "create.post" in names

@@ -113,3 +113,57 @@ async def test_http_429_and_408_are_transient():
         async with httpx.AsyncClient() as http:
             with pytest.raises(TransientBackendError):
                 await _client(http).call("/api/external/agentBalance", {})
+
+
+# --- step.ok consistency: only a genuine transport failure marks the step ok=false.
+# HTTP-status and business-code classification happen AFTER the step closes (matching every
+# other backend), so they must not flip the primary step's ok flag. ---
+
+@respx.mock
+async def test_business_code_error_records_step_ok_true():
+    from app.backends.diagnostics import DiagnosticsRecorder
+
+    respx.post(f"{BASE}/api/external/withdraw").mock(
+        return_value=httpx.Response(200, json={"code": 10, "msg": "User is in game", "data": None, "count": 0})
+    )
+    rec = DiagnosticsRecorder()
+    async with httpx.AsyncClient() as http:
+        client = GameVaultClient(base_url=BASE, agent_id="11", secret_key="gvsecret",
+                                  http_client=http, diagnostics=rec)
+        with pytest.raises(BackendError):
+            await client.call("/api/external/withdraw", {"user_id": "1"},
+                               step="withdraw.post", phase="primary")
+    step = next(s for s in rec.snapshot()["steps"] if s["name"] == "withdraw.post")
+    assert step["ok"] is True
+
+
+@respx.mock
+async def test_http_5xx_error_records_step_ok_true():
+    from app.backends.diagnostics import DiagnosticsRecorder
+
+    respx.post(f"{BASE}/api/external/agentBalance").mock(return_value=httpx.Response(503))
+    rec = DiagnosticsRecorder()
+    async with httpx.AsyncClient() as http:
+        client = GameVaultClient(base_url=BASE, agent_id="11", secret_key="gvsecret",
+                                  http_client=http, diagnostics=rec)
+        with pytest.raises(TransientBackendError):
+            await client.call("/api/external/agentBalance", {},
+                               step="balance.get", phase="primary")
+    step = next(s for s in rec.snapshot()["steps"] if s["name"] == "balance.get")
+    assert step["ok"] is True
+
+
+@respx.mock
+async def test_genuine_transport_error_records_step_ok_false():
+    from app.backends.diagnostics import DiagnosticsRecorder
+
+    respx.post(f"{BASE}/api/external/agentBalance").mock(side_effect=httpx.ConnectTimeout("boom"))
+    rec = DiagnosticsRecorder()
+    async with httpx.AsyncClient() as http:
+        client = GameVaultClient(base_url=BASE, agent_id="11", secret_key="gvsecret",
+                                  http_client=http, diagnostics=rec)
+        with pytest.raises(TransientBackendError):
+            await client.call("/api/external/agentBalance", {},
+                               step="balance.get", phase="primary")
+    step = next(s for s in rec.snapshot()["steps"] if s["name"] == "balance.get")
+    assert step["ok"] is False

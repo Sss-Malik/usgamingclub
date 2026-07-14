@@ -251,7 +251,7 @@ class AspnetCashierClient:
         body = await self.request_text(
             "POST", "/Module/AccountManager/AccountsList.aspx",
             form={"getscoreuserid": uid},
-            step="balance.getscore_post", phase="balance",
+            step="balance.getscore_post", phase="primary",
         )
         return parse_get_score_response(body)
 
@@ -287,8 +287,10 @@ class AspnetCashierClient:
         """Returns (kind, args). Raises BackendError on `kind == 'unknown'`."""
         kind, args = parse_sentinel(html)
         if kind == "unknown":
-            raise BackendError(f"{self._driver}:unknown_sentinel:{html[:80]!r}",
-                               provider_message=html)
+            # No `provider_message` here: `html` is the FULL untruncated third-party response
+            # body — emitting it would leak arbitrary page content into diagnostics.provider.
+            # Only the bounded 80-char slug goes into `reason`.
+            raise BackendError(f"{self._driver}:unknown_sentinel:{html[:80]!r}")
         return kind, args
 
     def business_failure_to_error(self, message: str) -> BackendError:

@@ -89,8 +89,11 @@ def test_business_failure_to_error_keeps_full_message_even_when_unknown(aspnet_c
     assert err.reason == f"orionstars:unknown:{msg[:60]}"
 
 
-def test_classify_unknown_sentinel_raises_with_untruncated_provider_message(aspnet_client):
+def test_classify_unknown_sentinel_raises_without_provider_message(aspnet_client):
+    # The unknown-sentinel branch must NOT leak the raw (untruncated, arbitrary third-party
+    # HTML) response body into diagnostics.provider.message — redaction-safe by construction.
     html = "<html>some totally unrecognized page body that isn't a known sentinel</html>"
     with pytest.raises(BackendError) as ei:
         aspnet_client.classify(html)
-    assert ei.value.provider_message == html
+    assert ei.value.provider_message is None
+    assert html[:80] in ei.value.reason

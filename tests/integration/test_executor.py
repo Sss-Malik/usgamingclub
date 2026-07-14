@@ -122,13 +122,35 @@ async def test_transient_error_posts_error_and_not_cached(seeded):
     route = respx.post(URL).mock(return_value=httpx.Response(200, json={"ok": True}))
     from app.operations.result_cache import InMemoryResultCache
     cache = InMemoryResultCache()
-    backend = _FakeBackend(raise_exc=TransientBackendError("timeout"))
+    backend = _FakeBackend(raise_exc=TransientBackendError(
+        "timeout", provider_http_status=503, provider_code="T1", provider_message="Gateway timeout",
+    ))
     await _run(_recharge_payload(), seeded, resolve=_resolver(backend), result_cache=cache)
     body = json.loads(route.calls.last.request.content.decode())
     assert body["status"] == "error"
+    assert body["diagnostics"]["failure_kind"] == "transient"
+    assert body["diagnostics"]["provider"] == {
+        "http_status": 503, "code": "T1", "message": "Gateway timeout",
+    }
     # not cached → a re-run re-calls the backend
     await _run(_recharge_payload(), seeded, resolve=_resolver(backend), result_cache=cache)
     assert backend.calls == 2
+
+
+@respx.mock
+async def test_unexpected_exception_posts_error_and_not_cached(seeded):
+    # A bare (non-BackendError) exception from the backend must still be reported cleanly —
+    # never crash the worker — with failure_kind "unexpected", and must NOT be cached (an arq
+    # re-run should get a fresh chance rather than replay an unexpected internal failure).
+    route = respx.post(URL).mock(return_value=httpx.Response(200, json={"ok": True}))
+    from app.operations.result_cache import InMemoryResultCache
+    cache = InMemoryResultCache()
+    backend = _FakeBackend(raise_exc=RuntimeError("boom"))
+    await _run(_recharge_payload(), seeded, resolve=_resolver(backend), result_cache=cache)
+    body = json.loads(route.calls.last.request.content.decode())
+    assert body["status"] == "error"
+    assert body["diagnostics"]["failure_kind"] == "unexpected"
+    assert await cache.get("recharge:t1") is None
 
 
 @respx.mock
@@ -195,6 +217,23 @@ async def test_preflight_failure_kind(seeded):
     await _run(payload, seeded, resolve=_resolver(_FakeBackend()))
     body = json.loads(route.calls.last.request.content.decode())
     assert body["diagnostics"]["failure_kind"] == "preflight"
+
+
+@respx.mock
+async def test_diagnostics_assembly_failure_still_delivers_legacy_webhook(seeded, monkeypatch):
+    # Spec invariant: a bug in diagnostics assembly must never suppress the webhook itself.
+    route = respx.post(URL).mock(return_value=httpx.Response(200, json={"ok": True}))
+    import app.operations.executor as executor_mod
+
+    def _boom(**kwargs):
+        raise RuntimeError("diagnostics blew up")
+
+    monkeypatch.setattr(executor_mod, "assemble_diagnostics", _boom)
+    backend = _FakeBackend()
+    await _run(_recharge_payload(), seeded, resolve=_resolver(backend))
+    body = json.loads(route.calls.last.request.content.decode())
+    assert body["status"] == "success"           # correct status/message still delivered
+    assert "diagnostics" not in body              # assembly failed -> legacy body (diagnostics=None)
 
 
 @respx.mock
