@@ -54,31 +54,37 @@ class YoloClient:
     async def get_session(self, *, invalidate: CachedSession | None = None) -> CachedSession:
         cached = await self._store.get(self._game_id)
         if cached and cached != invalidate and not _expired(cached):
+            self._diag.session_event("hit")
             return cached
         async with self._store.login_lock(
             self._game_id, ttl_seconds=self._lock_ttl, acquire_timeout=self._lock_timeout,
         ):
             cached = await self._store.get(self._game_id)
             if cached and cached != invalidate and not _expired(cached):
+                self._diag.session_event("hit")
                 return cached
             session = await self._do_login()
+            self._diag.session_event("fresh")
             await self._store.set(self._game_id, session, ttl_seconds=self._ttl)
             return session
 
     async def _do_login(self) -> CachedSession:
         cookies: dict[str, str] = {}
         # 1. GET login page -> scrape _token + collect cookies (XSRF-TOKEN).
-        r1 = await self._get(f"{self._base}/admin/auth/login", cookies=cookies)
+        async with self._diag.step("login.page", phase="auth"):
+            r1 = await self._get(f"{self._base}/admin/auth/login", cookies=cookies)
         cookies.update({k: v for k, v in r1.cookies.items()})
         token = parse_csrf_token(r1.text)
         # 2. POST credentials.
         body = urlencode({"_token": token, "username": self._username, "password": self._password})
-        r2 = await self._post(
-            f"{self._base}/admin/auth/login", body, cookies=cookies, csrf=token,
-        )
+        async with self._diag.step("login.submit", phase="auth"):
+            r2 = await self._post(
+                f"{self._base}/admin/auth/login", body, cookies=cookies, csrf=token,
+            )
         cookies.update({k: v for k, v in r2.cookies.items()})
         # 3. Load an admin page to confirm auth + grab the per-session CSRF token.
-        r3 = await self._get(f"{self._base}/admin/player_list", cookies=cookies)
+        async with self._diag.step("login.confirm", phase="auth"):
+            r3 = await self._get(f"{self._base}/admin/player_list", cookies=cookies)
         cookies.update({k: v for k, v in r3.cookies.items()})
         if looks_like_login_page(r3.text):
             raise BackendError("yolo:login_failed")
@@ -87,22 +93,30 @@ class YoloClient:
 
     # ---- requests ----
 
-    async def post_form(self, path: str, fields: dict) -> dict:
+    async def post_form(self, path: str, fields: dict, *,
+                        step: str = "primary", phase: str = "primary") -> dict:
         session = await self.get_session()
-        resp = await self._authed_post(path, fields, session)
-        if looks_like_auth_failure(resp.status_code, resp.headers.get("Location", ""), _safe_text(resp)):
-            session = await self.get_session(invalidate=session)
+        async with self._diag.step(step, phase=phase):
             resp = await self._authed_post(path, fields, session)
+        if looks_like_auth_failure(resp.status_code, resp.headers.get("Location", ""), _safe_text(resp)):
+            async with self._diag.step("recovery", phase="recovery"):
+                session = await self.get_session(invalidate=session)
+                self._diag.session_event("relogin")
+                resp = await self._authed_post(path, fields, session)
             if looks_like_auth_failure(resp.status_code, resp.headers.get("Location", ""), _safe_text(resp)):
                 raise BackendError("yolo:auth_failed")
         return map_envelope(resp.status_code, _json_or_none(resp))
 
-    async def get_text(self, path: str, params: dict | None = None) -> str:
+    async def get_text(self, path: str, params: dict | None = None, *,
+                       step: str = "primary", phase: str = "primary") -> str:
         session = await self.get_session()
-        resp = await self._authed_get(path, params, session)
-        if looks_like_auth_failure(resp.status_code, resp.headers.get("Location", ""), _safe_text(resp)):
-            session = await self.get_session(invalidate=session)
+        async with self._diag.step(step, phase=phase):
             resp = await self._authed_get(path, params, session)
+        if looks_like_auth_failure(resp.status_code, resp.headers.get("Location", ""), _safe_text(resp)):
+            async with self._diag.step("recovery", phase="recovery"):
+                session = await self.get_session(invalidate=session)
+                self._diag.session_event("relogin")
+                resp = await self._authed_get(path, params, session)
             if looks_like_auth_failure(resp.status_code, resp.headers.get("Location", ""), _safe_text(resp)):
                 raise BackendError("yolo:auth_failed")
         if resp.status_code >= 500:

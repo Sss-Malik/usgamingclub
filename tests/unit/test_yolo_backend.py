@@ -2,18 +2,27 @@
 import pytest
 
 from app.backends.context import AccountIdentity, BackendContext, GameCredentials
+from app.backends.diagnostics import DiagnosticsRecorder
 from app.backends.yolo.backend import YoloBackend
 
 
 class FakeClient:
-    """Stand-in for YoloClient: canned get_text + records post_form calls."""
+    """Stand-in for YoloClient: canned get_text + records post_form calls.
+
+    Accepts (and records) the `step`/`phase` kwargs the real YoloClient.post_form/get_text
+    take, so tests can assert which step name backend.py passed for a given op, without
+    needing the full respx + real-client harness (that's covered in test_yolo_client.py).
+    """
 
     def __init__(self, *, texts=None, post_result=None):
         self._texts = texts or {}
         self._post_result = post_result if post_result is not None else {"message": "success"}
-        self.posts = []
+        self.posts = []        # (path, fields) -- unchanged shape for existing assertions
+        self.post_steps = []   # step name per post_form call, same order as `posts`
+        self.get_steps = []    # step name per get_text call
 
-    async def get_text(self, path, params=None):
+    async def get_text(self, path, params=None, *, step="primary", phase="primary"):
+        self.get_steps.append(step)
         for key, val in self._texts.items():
             if key in path:
                 # crude param-aware: store last params for assertions
@@ -21,8 +30,9 @@ class FakeClient:
                 return val
         raise AssertionError(f"unexpected get_text {path}")
 
-    async def post_form(self, path, fields):
+    async def post_form(self, path, fields, *, step="primary", phase="primary"):
         self.posts.append((path, fields))
+        self.post_steps.append(step)
         return self._post_result
 
 
@@ -37,7 +47,7 @@ _GRID = """
 """
 
 
-def _ctx(*, account_username=None, username="apitest102", external_user_id=None):
+def _ctx(*, account_username=None, username="apitest102", external_user_id=None, diagnostics=None):
     creds = GameCredentials(
         game_id=1, name="yolo", backend_url="https://yolo.test", login_page_url=None,
         backend_username="webyolo1", backend_password="Web@@1122",
@@ -49,7 +59,8 @@ def _ctx(*, account_username=None, username="apitest102", external_user_id=None)
         account = AccountIdentity(game_account_id=1, user_id=2, game_id=1,
                                   username=username, external_user_id=external_user_id)
     return BackendContext(credentials=creds, user_id=2, account=account,
-                          idempotency_key="k", account_username=account_username)
+                          idempotency_key="k", account_username=account_username,
+                          diagnostics=diagnostics)
 
 
 async def test_agent_balance():
@@ -121,3 +132,77 @@ async def test_create_account_requires_username():
     with pytest.raises(BackendError, match="account_username_required"):
         await YoloBackend(c).create_account(_ctx(account_username=None, username=None))
     assert c.posts == []  # never hit the network
+
+
+# ---- diagnostics: op step names + external_user_id marks (Appendix A) ----
+
+async def test_recharge_records_recharge_post_step_and_marks_cached_external_user_id():
+    c = FakeClient(texts={"/admin/player_list": _GRID})
+    rec = DiagnosticsRecorder()
+    await YoloBackend(c).recharge(_ctx(external_user_id="922952", diagnostics=rec), amount=50)
+    assert c.post_steps[-1] == "recharge.post"
+    assert c.get_steps == []  # cached external_user_id -> no search needed
+    assert rec.snapshot()["external_user_id"] == "922952"
+
+
+async def test_recharge_records_resolve_search_step_and_marks_resolved_external_user_id():
+    c = FakeClient(texts={"/admin/player_list": _GRID})
+    rec = DiagnosticsRecorder()
+    await YoloBackend(c).recharge(
+        _ctx(username="apitest102", external_user_id=None, diagnostics=rec), amount=5)
+    assert "resolve.search" in c.get_steps
+    assert c.post_steps[-1] == "recharge.post"
+    assert rec.snapshot()["external_user_id"] == "922952"  # grid column 0
+
+
+async def test_redeem_records_redeem_post_step():
+    c = FakeClient(texts={"/admin/player_list": _GRID})
+    rec = DiagnosticsRecorder()
+    await YoloBackend(c).redeem(_ctx(external_user_id="922952", diagnostics=rec), amount=25)
+    assert c.post_steps[-1] == "redeem.post"
+
+
+async def test_reset_password_records_reset_post_step():
+    c = FakeClient(texts={"/admin/player_list": _GRID})
+    rec = DiagnosticsRecorder()
+    await YoloBackend(c).reset_password(_ctx(external_user_id="922952", diagnostics=rec))
+    assert c.post_steps[-1] == "reset.post"
+
+
+async def test_create_account_records_create_post_step_and_marks_id_from_followup_search():
+    c = FakeClient(texts={"/admin/player_list": _GRID},
+                   post_result={"message": "<div>Account: x Password: y</div>"})
+    rec = DiagnosticsRecorder()
+    res = await YoloBackend(c).create_account(
+        _ctx(account_username="apitest102", username=None, diagnostics=rec))
+    assert c.post_steps[0] == "create.post"
+    assert "resolve.search" in c.get_steps
+    assert rec.snapshot()["external_user_id"] == "922952"
+    assert res.external_user_id == "922952"
+
+
+async def test_read_balance_records_balance_read_step_and_marks_external_user_id():
+    c = FakeClient(texts={"/admin/player_list": _GRID})
+    rec = DiagnosticsRecorder()
+    res = await YoloBackend(c).read_balance(_ctx(username="apitest102", diagnostics=rec))
+    assert res.balance == 123.45
+    assert c.get_steps == ["balance.read"]      # NOT resolve.search -- this is the read-path get_text
+    assert rec.snapshot()["external_user_id"] == "922952"
+
+
+# ---- diagnostics: NO balance_after mark for yolo money ops (Appendix A flag) ----
+# yolo's post_form success envelope is a Dcat {status,message} dict with no balance field, so
+# there is nothing honest to retain into balance_after (read balances still flow via user_data).
+
+async def test_recharge_does_not_mark_balance_after():
+    c = FakeClient(texts={"/admin/player_list": _GRID}, post_result={"message": "success"})
+    rec = DiagnosticsRecorder()
+    await YoloBackend(c).recharge(_ctx(external_user_id="922952", diagnostics=rec), amount=50)
+    assert rec.snapshot()["balance_after"] is None
+
+
+async def test_redeem_does_not_mark_balance_after():
+    c = FakeClient(texts={"/admin/player_list": _GRID}, post_result={"message": "success"})
+    rec = DiagnosticsRecorder()
+    await YoloBackend(c).redeem(_ctx(external_user_id="922952", diagnostics=rec), amount=25)
+    assert rec.snapshot()["balance_after"] is None

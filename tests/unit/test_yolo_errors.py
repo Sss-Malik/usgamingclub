@@ -59,3 +59,58 @@ def test_auth_failure_detection():
 def test_auth_failure_via_login_page_body():
     login_page = '<form action="/admin/auth/login"><input name="password" type="password"></form>'
     assert looks_like_auth_failure(200, "", login_page) is True
+
+
+# ---- diagnostics: provider fields on map_envelope raises ----
+
+def test_business_error_carries_http_status_and_untruncated_message():
+    long = "score is insufficient " + "x" * 200
+    with pytest.raises(BackendError) as ei:
+        map_envelope(200, {"status": False, "data": {"message": long}})
+    err = ei.value
+    assert err.provider_http_status == 200
+    assert err.provider_message == long        # untruncated
+    assert err.provider_code is None
+    assert err.reason == "yolo:insufficient_balance"
+
+
+def test_validation_error_carries_http_status_and_untruncated_message():
+    long = "The Accounts has already been taken. " + "x" * 200
+    with pytest.raises(BackendError) as ei:
+        map_envelope(422, {"status": False, "data": [], "errors": {"Accounts": [long]}})
+    err = ei.value
+    assert err.provider_http_status == 422
+    assert err.provider_message == long        # untruncated
+    assert err.provider_code is None
+    assert err.reason == "yolo:account_exists"
+
+
+def test_unmatched_validation_error_still_carries_provider_fields():
+    with pytest.raises(BackendError) as ei:
+        map_envelope(422, {"status": False, "data": [], "errors": {"weird": ["Some odd rule."]}})
+    err = ei.value
+    assert err.provider_http_status == 422
+    assert err.provider_message == "Some odd rule."
+    assert err.provider_code is None
+
+
+def test_unmatched_business_error_still_carries_provider_fields():
+    with pytest.raises(BackendError) as ei:
+        map_envelope(200, {"status": False, "data": {"message": "Some unmapped failure"}})
+    err = ei.value
+    assert err.provider_http_status == 200
+    assert err.provider_message == "Some unmapped failure"
+    assert err.provider_code is None
+
+
+def test_server_error_carries_http_status():
+    with pytest.raises(TransientBackendError) as ei:
+        map_envelope(503, None)
+    assert ei.value.provider_http_status == 503
+    assert ei.value.provider_code is None
+
+
+def test_bad_response_carries_http_status():
+    with pytest.raises(TransientBackendError) as ei:
+        map_envelope(200, None)
+    assert ei.value.provider_http_status == 200
