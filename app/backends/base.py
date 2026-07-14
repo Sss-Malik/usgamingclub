@@ -13,10 +13,25 @@ from app.schemas.results import (
 
 
 class BackendError(Exception):
-    """Raised when a game backend call fails in a way that should be reported as status:failed."""
+    """Raised when a game backend call fails in a way that should be reported as status:failed.
 
-    def __init__(self, reason: str) -> None:
+    `reason` is the player-facing slug (unchanged). The optional `provider_*` fields carry
+    structured provider detail for the webhook `diagnostics` channel; they are never used for
+    the player-facing message.
+    """
+
+    def __init__(
+        self,
+        reason: str,
+        *,
+        provider_http_status: int | None = None,
+        provider_code: str | int | None = None,
+        provider_message: str | None = None,
+    ) -> None:
         self.reason = reason
+        self.provider_http_status = provider_http_status
+        self.provider_code = provider_code
+        self.provider_message = provider_message
         super().__init__(reason)
 
 

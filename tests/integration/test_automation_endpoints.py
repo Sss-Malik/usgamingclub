@@ -127,3 +127,12 @@ def test_bad_signature_401(client):
 def test_invalid_body_422(client):
     resp = _post(client, "/recharge", {"user_id": 1, "backend_name": "milkyway"})
     assert resp.status_code == 422
+
+
+def test_recharge_enqueues_op_id(client):
+    body = {"user_id": 42, "backend_name": "milkyway", "username": "player_one",
+            "amount": 5, "transaction_id": "t1", "op_id": "01JOP"}
+    resp = _post(client, "/recharge", body)
+    assert resp.status_code == 202
+    _f, payload, _j = client.fake.jobs[-1]
+    assert payload["op_id"] == "01JOP"

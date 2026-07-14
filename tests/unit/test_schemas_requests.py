@@ -53,3 +53,26 @@ def test_operation_roundtrips_via_dict():
         "correlation": {"transaction_id": "uuid-1"},
     })
     assert op.action == "recharge" and op.correlation["transaction_id"] == "uuid-1"
+
+
+def test_recharge_request_parses_optional_op_id():
+    req = RechargeRequest.model_validate({
+        "user_id": 1, "backend_name": "milkyway", "username": "u",
+        "amount": 5, "transaction_id": "t1", "op_id": "01JXYZ",
+    })
+    assert req.op_id == "01JXYZ"
+
+
+def test_recharge_request_op_id_absent_is_none():
+    req = RechargeRequest.model_validate({
+        "user_id": 1, "backend_name": "milkyway", "username": "u",
+        "amount": 5, "transaction_id": "t1",
+    })
+    assert req.op_id is None
+
+
+def test_operation_carries_op_id():
+    op = Operation(action="read", type="READ_BALANCE", idempotency_key="read:1",
+                   user_id=1, backend_name="milkyway", op_id="01JABC")
+    assert op.op_id == "01JABC"
+    assert "op_id" in op.model_dump()

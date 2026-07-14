@@ -92,6 +92,7 @@ class OrionStarsBackend:
         # GET the form to scrape viewstate (CreateAccount has EnableEventValidation=true).
         get_body = await self._client.request_text(
             "GET", "/Module/AccountManager/CreateAccount.aspx", params={"time": time_q},
+            step="create.get", phase="primary",
         )
         from app.backends._aspnet_cashier.parsers import parse_viewstate
         vs = parse_viewstate(get_body)
@@ -110,6 +111,7 @@ class OrionStarsBackend:
         text = await self._client.request_text(
             "POST", "/Module/AccountManager/CreateAccount.aspx",
             params={"time": time_q}, form=form,
+            step="create.post", phase="primary",
         )
         kind, args = self._client.classify(text)
         if kind != "success":
@@ -119,8 +121,10 @@ class OrionStarsBackend:
         if not pairs:
             raise BackendError(f"{self._client._driver}:create_followup_search_no_rows")
         uid, gid = pairs[0]
+        external_user_id = f"{uid}:{gid}"
+        ctx.diag.mark_external_user_id(external_user_id)
         return CreateAccountResult(
-            username=username, password=pwd, external_user_id=f"{uid}:{gid}",
+            username=username, password=pwd, external_user_id=external_user_id,
         )
 
     # ---- internal ----
@@ -129,10 +133,12 @@ class OrionStarsBackend:
         """Return (UserID, GameID) for ctx.account: split cached external_user_id or search."""
         if ctx.account and ctx.account.external_user_id and ":" in ctx.account.external_user_id:
             uid, gid = ctx.account.external_user_id.split(":", 1)
+            ctx.diag.mark_external_user_id(f"{uid}:{gid}")
             return uid, gid
         if ctx.account and ctx.account.username:
             pairs = await self._client.search_account(ctx.account.username)
             if pairs:
+                ctx.diag.mark_external_user_id(f"{pairs[0][0]}:{pairs[0][1]}")
                 return pairs[0]
             raise BackendError(f"{self._client._driver}:player_not_found")
         raise BackendError(f"{self._client._driver}:player_not_found")

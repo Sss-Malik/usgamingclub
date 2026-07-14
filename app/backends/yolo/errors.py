@@ -23,11 +23,18 @@ def map_envelope(http_status: int, body: dict | None) -> dict:
 
     Three envelopes (findings §7): 200+status:true success; 200+status:false business error
     (`data.message`); 422 validation error (`errors{}`). 5xx / non-JSON -> transient.
+
+    Every raise attaches `provider_http_status=http_status` for the webhook diagnostics
+    channel. The validation and business raises additionally attach the raw, untruncated
+    `provider_message` (the reason slug's own message is truncated for player-facing use;
+    the provider field is not). YOLO has no numeric provider code -> `provider_code` stays
+    the BackendError default (None); our own terminal/transient classification lives in the
+    `reason` slug instead.
     """
     if http_status >= 500:
-        raise TransientBackendError(f"yolo:http_{http_status}")
+        raise TransientBackendError(f"yolo:http_{http_status}", provider_http_status=http_status)
     if body is None:
-        raise TransientBackendError("yolo:bad_response")
+        raise TransientBackendError("yolo:bad_response", provider_http_status=http_status)
 
     if http_status == 422 or "errors" in body:
         errors = body.get("errors") or {}
@@ -35,8 +42,9 @@ def map_envelope(http_status: int, body: dict | None) -> dict:
         msg = msgs[0] if isinstance(msgs, list) and msgs else ""
         slug = _slug(msg)
         if slug:
-            raise BackendError(f"yolo:{slug}")
-        raise BackendError(f"yolo:validation_error: {field}: {msg[:60]}")
+            raise BackendError(f"yolo:{slug}", provider_http_status=http_status, provider_message=msg)
+        raise BackendError(f"yolo:validation_error: {field}: {msg[:60]}",
+                           provider_http_status=http_status, provider_message=msg)
 
     if body.get("status") is True:
         data = body.get("data")
@@ -47,8 +55,9 @@ def map_envelope(http_status: int, body: dict | None) -> dict:
     msg = data.get("message", "") if isinstance(data, dict) else ""
     slug = _slug(msg)
     if slug:
-        raise BackendError(f"yolo:{slug}")
-    raise BackendError(f"yolo:business_error: {msg[:80]}")
+        raise BackendError(f"yolo:{slug}", provider_http_status=http_status, provider_message=msg)
+    raise BackendError(f"yolo:business_error: {msg[:80]}",
+                       provider_http_status=http_status, provider_message=msg)
 
 
 def looks_like_auth_failure(status_code: int, location: str, text: str) -> bool:

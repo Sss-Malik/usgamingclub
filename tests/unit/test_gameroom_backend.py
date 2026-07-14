@@ -7,6 +7,7 @@ import respx
 
 from app.backends.base import BackendError
 from app.backends.context import AccountIdentity, BackendContext, GameCredentials
+from app.backends.diagnostics import DiagnosticsRecorder
 from app.backends.gameroom.backend import GameroomBackend
 from app.backends.gameroom.client import GameroomClient
 from app.backends.gameroom.session import InMemorySessionStore
@@ -25,16 +26,18 @@ def _creds():
 
 
 def _ctx(*, account=True, external="2998032", username="apifull9983654",
-         idem="idem-1", account_username=None, user_id=51):
+         idem="idem-1", account_username=None, user_id=51, diagnostics=None):
     acct = AccountIdentity(3001, user_id, 11, username, external) if account else None
     return BackendContext(credentials=_creds(), user_id=user_id, account=acct,
-                          idempotency_key=idem, account_username=account_username)
+                          idempotency_key=idem, account_username=account_username,
+                          diagnostics=diagnostics)
 
 
-def _backend(http):
+def _backend(http, diagnostics=None):
     client = GameroomClient(
         base_url=BASE, username="u", password="p",
         http_client=http, session_store=InMemorySessionStore(), game_id=11,
+        diagnostics=diagnostics,
     )
     return GameroomBackend(client)
 
@@ -241,3 +244,90 @@ async def test_reset_password_posts_complex_password_and_returns_it():
     body = route.calls.last.request.content.decode()
     assert "id=2998032" in body
     assert "password=" in body and "password_confirmation=" in body
+
+
+# ---- diagnostics: named steps + snapshot marks ----
+
+@respx.mock
+async def test_recharge_marks_balance_before_and_records_recharge_snapshot_step():
+    _mock_login()
+    _mock_agent_money(agent="10.00", player=5)
+    respx.post(f"{BASE}/api/player/agentRecharge").mock(return_value=httpx.Response(
+        200, json={"status_code": 200, "message": "Recharge successful",
+                   "data": {"balance": "1", "bonus": 0, "remark": "", "total_balance": "1.00"}}))
+    rec = DiagnosticsRecorder()
+    async with httpx.AsyncClient() as http:
+        r = await _backend(http, diagnostics=rec).recharge(_ctx(diagnostics=rec), amount=50)
+    snap = rec.snapshot()
+    assert snap["balance_before"] == 5.0                            # player balance from agentMoney's "balance"
+    assert snap["balance_after"] == "1.00"                          # recharge only: data["total_balance"]
+    names = [s["name"] for s in snap["steps"]]
+    assert "recharge.snapshot" in names
+    assert "recharge.post" in names
+    assert r.balance == 1.0
+
+
+@respx.mock
+async def test_redeem_marks_balance_before_and_records_redeem_snapshot_step():
+    _mock_login()
+    _mock_agent_money(player=7)
+    respx.post(f"{BASE}/api/player/agentWithdraw").mock(return_value=httpx.Response(
+        200, json={"status_code": 200, "message": "Withdraw successful"}))
+    rec = DiagnosticsRecorder()
+    async with httpx.AsyncClient() as http:
+        await _backend(http, diagnostics=rec).redeem(_ctx(diagnostics=rec), amount=30)
+    snap = rec.snapshot()
+    assert snap["balance_before"] == 7.0
+    assert snap["balance_after"] is None                            # redeem does NOT mark balance_after
+    names = [s["name"] for s in snap["steps"]]
+    assert "redeem.snapshot" in names
+    assert "redeem.post" in names
+
+
+@respx.mock
+async def test_create_account_marks_external_user_id_and_records_create_post_step():
+    _mock_login()
+    respx.post(f"{BASE}/api/player/playerInsert").mock(return_value=httpx.Response(
+        200, json={"status_code": 200, "message": "Insert successful",
+                   "data": {"id": 2998032, "account": "apifull9983654", "password": "Test1122", "balance": "0"}}))
+    rec = DiagnosticsRecorder()
+    async with httpx.AsyncClient() as http:
+        r = await _backend(http, diagnostics=rec).create_account(
+            _ctx(account=False, account_username="apifull9983654", diagnostics=rec))
+    snap = rec.snapshot()
+    assert snap["external_user_id"] == "2998032"
+    assert "create.post" in [s["name"] for s in snap["steps"]]
+    assert r.external_user_id == "2998032"
+
+
+@respx.mock
+async def test_read_balance_records_resolve_and_balance_read_steps_and_marks_cached_external_id():
+    _mock_login()
+    route = respx.get(f"{BASE}/api/player/agentMoney").mock(return_value=httpx.Response(
+        200, json={"status_code": 200, "message": "ok",
+                   "data": {"username": "apifull9983654", "balance": 0, "cusBlance": "4.00"}}))
+    rec = DiagnosticsRecorder()
+    async with httpx.AsyncClient() as http:
+        await _backend(http, diagnostics=rec).read_balance(_ctx(diagnostics=rec))
+    snap = rec.snapshot()
+    assert snap["external_user_id"] == "2998032"                    # cached ext id, marked via _player_id
+    assert "balance.read" in [s["name"] for s in snap["steps"]]
+    assert dict(route.calls.last.request.url.params) == {"id": "2998032"}
+
+
+@respx.mock
+async def test_player_id_fallback_records_resolve_user_id_step_and_marks_external_id():
+    _mock_login()
+    respx.get(f"{BASE}/api/player/userList").mock(return_value=httpx.Response(
+        200, json={"status_code": 200, "message": "ok", "count": 1,
+                   "data": [{"Id": 99, "id": 99, "Account": "user_no_ext", "score": 0}]}))
+    respx.get(f"{BASE}/api/player/agentMoney").mock(return_value=httpx.Response(
+        200, json={"status_code": 200, "message": "ok", "data": {"balance": 5}}))
+    rec = DiagnosticsRecorder()
+    async with httpx.AsyncClient() as http:
+        r = await _backend(http, diagnostics=rec).read_balance(
+            _ctx(external=None, username="user_no_ext", diagnostics=rec))
+    assert r.balance == 5.0
+    snap = rec.snapshot()
+    assert snap["external_user_id"] == "99"
+    assert "resolve.user_id" in [s["name"] for s in snap["steps"]]

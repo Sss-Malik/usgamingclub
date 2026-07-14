@@ -31,8 +31,14 @@ GAMEVAULT_STATUS: dict[int, str] = {
 TRANSIENT_CODES: frozenset[int] = frozenset({12, 14, 21})
 
 
-def map_code(code: int, msg: str) -> str:
+def map_code(code: int, msg: str) -> tuple[str, int, str]:
+    """Map a GameVault status code to (slug, code, raw_msg).
+
+    `slug` truncates unknown messages to 80 chars for the player-facing reason string;
+    `raw_msg` is the untruncated message, carried separately for the provider diagnostics field.
+    """
     slug = GAMEVAULT_STATUS.get(code)
+    raw = msg or ""
     if slug is not None:
-        return f"gamevault:{code}:{slug}"
-    return f"gamevault:{code}:{(msg or 'error')[:80]}"
+        return (f"gamevault:{code}:{slug}", code, raw)
+    return (f"gamevault:{code}:{raw[:80] or 'error'}", code, raw)

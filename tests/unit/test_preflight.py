@@ -1,5 +1,6 @@
 import pytest
 
+from app.backends.diagnostics import DiagnosticsRecorder
 from app.preflight.checks import PreflightError, build_context
 
 
@@ -174,6 +175,20 @@ async def test_context_carries_idempotency_key(seeded):
         )
     assert ctx.credentials.backend_driver == "gamevault"
     assert ctx.idempotency_key == "idem-1"
+
+
+@pytest.mark.asyncio
+async def test_build_context_attaches_recorder(seeded):
+    rec = DiagnosticsRecorder()
+    async with seeded() as s:
+        ctx = await build_context(
+            s, type="READ_BALANCE", user_id=42,
+            backend_name="milkyway", username="player_one",
+            diagnostics=rec, op_id="01J", attempt=2,
+        )
+    assert ctx.diag is rec
+    assert ctx.op_id == "01J"
+    assert ctx.attempt == 2
 
 
 @pytest.mark.asyncio

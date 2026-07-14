@@ -43,7 +43,10 @@ class GameroomBackend:
 
     async def read_balance(self, ctx: BackendContext) -> ReadBalanceResult:
         pid = await self._player_id(ctx)
-        data = await self._client.call("GET", "/api/player/agentMoney", params={"id": pid})
+        data = await self._client.call(
+            "GET", "/api/player/agentMoney", params={"id": pid},
+            step="balance.read", phase="primary",
+        )
         return ReadBalanceResult(balance=_balance(data.get("balance", 0)))
 
     # ---- RESET_PASSWORD ----
@@ -54,6 +57,7 @@ class GameroomBackend:
         await self._client.call(
             "POST", "/api/player/reset",
             fields={"id": pid, "password": pwd, "password_confirmation": pwd},
+            step="reset.post", phase="primary",
         )
         return ResetPasswordResult(password=pwd)
 
@@ -64,7 +68,8 @@ class GameroomBackend:
         # Pre-fetch the current agent balance: the server rejects a stale or empty
         # `available_balance` with "Available balance has changed. Please refresh and recharge again."
         # (Verified in production; the findings doc's "value can be stale" note was wrong.)
-        snapshot = await self._agent_money(pid)
+        snapshot = await self._agent_money(pid, step="recharge.snapshot")
+        ctx.diag.mark_balance_before(float(snapshot["balance"]))
         # bonus=0: we already credit `amount` via balance; bonus is on top per the doc.
         # remark="": UUIDs have hyphens which fail [A-Za-z0-9]; empty is allowed.
         data = await self._client.call(
@@ -77,7 +82,9 @@ class GameroomBackend:
                 "balance": str(int(amount)),
                 "remark": "",
             },
+            step="recharge.post", phase="primary",
         )
+        ctx.diag.mark_balance_after(data.get("total_balance"))
         return RechargeResult(balance=_balance_opt(data.get("total_balance")))
 
     # ---- REDEEM ----
@@ -86,7 +93,8 @@ class GameroomBackend:
         pid = await self._player_id(ctx)
         # Pre-fetch the player balance: same staleness validation as recharge applies to
         # `customer_balance`. agentMoney returns both fields in one call.
-        snapshot = await self._agent_money(pid)
+        snapshot = await self._agent_money(pid, step="redeem.snapshot")
+        ctx.diag.mark_balance_before(float(snapshot["balance"]))
         # agentWithdraw success returns no `data` block; treat as success and omit balance.
         await self._client.call(
             "POST", "/api/player/agentWithdraw",
@@ -97,6 +105,7 @@ class GameroomBackend:
                 "balance": str(int(amount)),
                 "remark": "",
             },
+            step="redeem.post", phase="primary",
         )
         return RedeemResult()
 
@@ -115,10 +124,12 @@ class GameroomBackend:
                 "password": pwd,
                 "password_confirmation": pwd,
             },
+            step="create.post", phase="primary",
         )
         new_id = data.get("id")
         if new_id is None:
             raise BackendError("gameroom:playerInsert_missing_id")
+        ctx.diag.mark_external_user_id(str(new_id))
         return CreateAccountResult(
             username=ctx.account_username,
             password=pwd,
@@ -127,7 +138,7 @@ class GameroomBackend:
 
     # ---- internal: helpers ----
 
-    async def _agent_money(self, player_id: str) -> dict:
+    async def _agent_money(self, player_id: str, *, step: str) -> dict:
         """Fetch the current player+agent balance pair. Used to populate the snapshot fields
         (`available_balance` for recharge, `customer_balance` for withdraw) — the server validates
         these against its current ledger and rejects mismatches.
@@ -135,17 +146,20 @@ class GameroomBackend:
         """
         data = await self._client.call(
             "GET", "/api/player/agentMoney", params={"id": player_id},
+            step=step, phase="snapshot",
         )
         return data if isinstance(data, dict) else {}
 
     async def _player_id(self, ctx: BackendContext) -> str:
         """Prefer cached external_user_id; else exact-match the player via userList."""
         if ctx.account and ctx.account.external_user_id:
+            ctx.diag.mark_external_user_id(ctx.account.external_user_id)
             return ctx.account.external_user_id
         if ctx.account and ctx.account.username:
             envelope = await self._client.call_raw(
                 "GET", "/api/player/userList",
                 params={"page": 1, "limit": 20, "account": ctx.account.username},
+                step="resolve.user_id", phase="resolve",
             )
             rows = envelope.get("data") or []
             if isinstance(rows, list):
@@ -153,6 +167,7 @@ class GameroomBackend:
                     if isinstance(row, dict) and row.get("Account") == ctx.account.username:
                         rid = row.get("id") or row.get("Id")
                         if rid is not None:
+                            ctx.diag.mark_external_user_id(str(rid))
                             return str(rid)
             raise BackendError("gameroom:player_not_found")
         raise BackendError("gameroom:player_not_found")

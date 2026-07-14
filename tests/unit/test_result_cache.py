@@ -32,3 +32,29 @@ async def test_redis_roundtrip_and_ttl_and_key():
     got = await cache.get("idem-9")
     assert got.status == "failed" and got.reason == "backend_error: x" and got.result is None
     assert await cache.get("missing") is None
+
+
+class _FakeRedis:
+    def __init__(self):
+        self.store = {}
+
+    async def get(self, k):
+        return self.store.get(k)
+
+    async def set(self, k, v, ex=None):
+        self.store[k] = v
+
+
+async def test_cached_outcome_detail_defaults_none():
+    assert CachedOutcome("succeeded", {"balance": 1}, None).detail is None
+
+
+async def test_redis_cache_round_trips_detail():
+    cache = RedisResultCache(_FakeRedis())
+    detail = {"failure_kind": "backend",
+              "provider": {"http_status": 200, "code": "7", "message": "no funds"},
+              "external_user_id": "u:1", "balance_before": None, "balance_after": None}
+    await cache.set("recharge:1", CachedOutcome("failed", None, "gamevault:7:x", detail=detail), 60)
+    got = await cache.get("recharge:1")
+    assert got.detail == detail
+    assert got.reason == "gamevault:7:x"

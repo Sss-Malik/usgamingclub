@@ -28,8 +28,8 @@ def _raise_for_code(body: dict, *, op: str, driver: str) -> None:
         raise TransientBackendError(f"{driver}:malformed_response")
     slug, terminal = mapped
     if terminal:
-        raise BackendError(f"{driver}:{slug}")
-    raise TransientBackendError(f"{driver}:{slug}")
+        raise BackendError(f"{driver}:{slug}", provider_http_status=200, provider_code=code)
+    raise TransientBackendError(f"{driver}:{slug}", provider_http_status=200, provider_code=code)
 
 
 class UltraPandaBackend:
@@ -43,7 +43,9 @@ class UltraPandaBackend:
 
     async def agent_balance(self, ctx: BackendContext) -> AgentBalanceResult:
         token = await self._client.get_or_login()
-        body = await self._client.call("/user/CurScore", {"token": token})
+        body = await self._client.call(
+            "/user/CurScore", {"token": token}, step="agent_balance.read",
+        )
         _raise_for_code(body, op="agent_balance", driver=self._client._driver)
         limit = body.get("LimitNum")
         if limit is None:
@@ -54,7 +56,9 @@ class UltraPandaBackend:
 
     async def read_balance(self, ctx: BackendContext) -> ReadBalanceResult:
         account = self._account_name(ctx)
-        body = await self._client.call("/account/getPlayerScore", {"account": account})
+        body = await self._client.call(
+            "/account/getPlayerScore", {"account": account}, step="balance.read",
+        )
         _raise_for_code(body, op="read_balance", driver=self._client._driver)
         cur = body.get("curScore", 0)
         return ReadBalanceResult(balance=float(cur))
@@ -74,6 +78,7 @@ class UltraPandaBackend:
                 "phone": "",
                 "remark": "",
             },
+            step="reset.post",
         )
         _raise_for_code(body, op="reset_password", driver=self._client._driver)
         return ResetPasswordResult(password=pwd)
@@ -90,6 +95,7 @@ class UltraPandaBackend:
                 "user_type": 0,
             },
             op="recharge",
+            step="recharge.post",
         )
         _raise_for_code(body, op="recharge", driver=self._client._driver)
         return RechargeResult(balance=None)
@@ -106,6 +112,7 @@ class UltraPandaBackend:
                 "user_type": 0,
             },
             op="redeem",
+            step="redeem.post",
         )
         _raise_for_code(body, op="redeem", driver=self._client._driver)
         return RedeemResult()
@@ -120,6 +127,7 @@ class UltraPandaBackend:
         body = await self._client.call(
             "/account/savePlayer",
             {"account": username, "pwd": pwd},
+            step="create.post",
         )
         _raise_for_code(body, op="create_account", driver=self._client._driver)
         return CreateAccountResult(username=username, password=pwd, external_user_id=None)

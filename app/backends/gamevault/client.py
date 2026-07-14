@@ -5,17 +5,22 @@ import time
 import httpx
 
 from app.backends.base import BackendError, TransientBackendError
+from app.backends.diagnostics import NULL_RECORDER
 from app.backends.gamevault.errors import TRANSIENT_CODES, map_code
 
 
 class GameVaultClient:
     """Transport for the GameVault HTTP API: MD5 auth, multipart POST, envelope parsing."""
 
-    def __init__(self, *, base_url: str, agent_id: str, secret_key: str, http_client: httpx.AsyncClient) -> None:
+    def __init__(
+        self, *, base_url: str, agent_id: str, secret_key: str, http_client: httpx.AsyncClient,
+        diagnostics=None,
+    ) -> None:
         self._base_url = base_url.rstrip("/")
         self._agent_id = str(agent_id)
         self._secret_key = secret_key
         self._http = http_client
+        self._diag = diagnostics or NULL_RECORDER
 
     def _auth_fields(self) -> dict[str, str]:
         ts = str(int(time.time()))
@@ -24,31 +29,41 @@ class GameVaultClient:
         ).hexdigest()
         return {"agent_id": self._agent_id, "timestamp": ts, "token": token}
 
-    async def call(self, path: str, fields: dict[str, str]) -> dict:
+    async def call(self, path: str, fields: dict[str, str], *,
+                    step: str = "primary", phase: str = "primary") -> dict:
         form = {**self._auth_fields(), **{k: str(v) for k, v in fields.items()}}
         # Force multipart/form-data with plain form fields (filename=None).
         multipart = {k: (None, v) for k, v in form.items()}
         url = f"{self._base_url}{path}"
-        try:
-            resp = await self._http.post(url, files=multipart)
-        except httpx.HTTPError as exc:
-            raise TransientBackendError(f"gamevault_transport:{type(exc).__name__}") from exc
+        # The step wraps ONLY the network POST + transport-error conversion, like every other
+        # backend: a genuine transport failure is a step ok=false, but HTTP-status and business
+        # classification below are NOT (the transport succeeded; only the response was bad).
+        async with self._diag.step(step, phase=phase):
+            try:
+                resp = await self._http.post(url, files=multipart)
+            except httpx.HTTPError as exc:
+                raise TransientBackendError(f"gamevault_transport:{type(exc).__name__}") from exc
 
         if resp.status_code in (408, 429) or resp.status_code >= 500:
-            raise TransientBackendError(f"gamevault_http_{resp.status_code}")
+            raise TransientBackendError(f"gamevault_http_{resp.status_code}",
+                                         provider_http_status=resp.status_code)
         if resp.status_code >= 300:
-            raise BackendError(f"gamevault_http_{resp.status_code}")
+            raise BackendError(f"gamevault_http_{resp.status_code}",
+                                provider_http_status=resp.status_code)
 
         try:
             body = resp.json()
         except ValueError as exc:
-            raise TransientBackendError("gamevault_bad_response") from exc
+            raise TransientBackendError("gamevault_bad_response",
+                                         provider_http_status=resp.status_code) from exc
 
         code = body.get("code")
         if code == 0:
             data = body.get("data")
             return data if isinstance(data, dict) else {}
-        reason = map_code(code, body.get("msg", ""))
+        slug, pcode, pmsg = map_code(code, body.get("msg", ""))
         if code in TRANSIENT_CODES:
-            raise TransientBackendError(reason)
-        raise BackendError(reason)
+            raise TransientBackendError(slug, provider_http_status=resp.status_code,
+                                         provider_code=pcode, provider_message=pmsg)
+        raise BackendError(slug, provider_http_status=resp.status_code,
+                            provider_code=pcode, provider_message=pmsg)

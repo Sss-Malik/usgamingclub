@@ -6,6 +6,7 @@ import respx
 
 from app.backends._aspnet_cashier.client import AspnetCashierClient
 from app.backends._aspnet_cashier.session import CachedSession, InMemoryCookieSessionStore
+from app.backends.diagnostics import DiagnosticsRecorder
 from tests.conftest import FakeCaptchaSolver
 
 BASE = "https://os.test"
@@ -34,7 +35,7 @@ def _mock_login_chain(cookie_value: str = "COOKIE_NEW"):
     )
 
 
-def _client(http, store=None, captcha=None) -> AspnetCashierClient:
+def _client(http, store=None, captcha=None, diagnostics=None) -> AspnetCashierClient:
     return AspnetCashierClient(
         base_url=BASE, username="u", password="p",
         http_client=http,
@@ -46,6 +47,7 @@ def _client(http, store=None, captcha=None) -> AspnetCashierClient:
         lock_acquire_timeout_seconds=5.0,
         captcha_login_max_attempts=3,
         driver_prefix="orionstars",
+        diagnostics=diagnostics,
     )
 
 
@@ -385,3 +387,131 @@ async def test_request_text_4xx_is_transient_not_terminal():
         with pytest.raises(TransientBackendError, match="http_429"):
             await c.request_text("POST", "/Module/AccountManager/AccountsList.aspx",
                                  form={"x": "1"})
+
+
+# --- diagnostics: session events ---
+
+@respx.mock
+async def test_get_or_login_cache_hit_emits_session_hit():
+    store = InMemoryCookieSessionStore()
+    await store.set(42, CachedSession(cookie="CACHED", expires_at=int(time.time()) + 3600),
+                    ttl_seconds=3600)
+    rec = DiagnosticsRecorder()
+    async with httpx.AsyncClient(base_url=BASE) as http:
+        c = _client(http, store=store, diagnostics=rec)
+        cookie = await c.get_or_login()
+    assert cookie == "CACHED"
+    assert rec.snapshot()["session_reuse"] == "hit"
+
+
+@respx.mock
+async def test_get_or_login_cache_miss_emits_session_fresh():
+    _mock_login_chain("NEW_COOKIE")
+    rec = DiagnosticsRecorder()
+    async with httpx.AsyncClient(base_url=BASE) as http:
+        cookie = await _client(http, diagnostics=rec).get_or_login()
+    assert cookie == "NEW_COOKIE"
+    assert rec.snapshot()["session_reuse"] == "fresh"
+
+
+@respx.mock
+async def test_request_dead_session_retry_records_recovery_step_and_relogin_event():
+    store = InMemoryCookieSessionStore()
+    await store.set(42, CachedSession(cookie="DEAD", expires_at=int(time.time()) + 3600),
+                    ttl_seconds=3600)
+    _mock_login_chain("REVIVED")
+    respx.post(f"{BASE}/Module/AccountManager/AccountsList.aspx").mock(
+        side_effect=[
+            httpx.Response(500, text=_NRE_500),
+            httpx.Response(200, text="9.99@0.00|<html/>"),
+        ]
+    )
+    rec = DiagnosticsRecorder()
+    async with httpx.AsyncClient(base_url=BASE) as http:
+        c = _client(http, store=store, diagnostics=rec)
+        body = await c.request_text(
+            "POST", "/Module/AccountManager/AccountsList.aspx",
+            form={"getscoreuserid": "1"}, step="balance.getscore_post", phase="primary",
+        )
+    assert body.startswith("9.99@0.00|")
+    snap = rec.snapshot()
+    assert snap["session_reuse"] == "relogin"
+    names = [s["name"] for s in snap["steps"]]
+    assert "recovery" in names
+    assert "balance.getscore_post" in names
+
+
+# --- diagnostics: the six op-facing step names + login sub-steps, forced login ---
+
+@respx.mock
+async def test_forced_login_records_login_substeps_and_all_six_op_steps():
+    """No pre-seeded session -> get_or_login must perform a fresh captcha login.
+    Then exercise every op-facing helper once so all six pinned step names + the
+    four login sub-steps show up in a single snapshot."""
+    _mock_login_chain("FORCED")
+    respx.get(f"{BASE}/Module/AccountManager/AccountsList.aspx").mock(
+        return_value=httpx.Response(200, text=_ACCOUNTS_LIST_HTML)
+    )
+    respx.post(f"{BASE}/Module/AccountManager/AccountsList.aspx").mock(
+        side_effect=[
+            httpx.Response(200, text=_ACCOUNTS_LIST_HTML),      # search_account POST
+            httpx.Response(
+                200, text="Module/AccountManager/GrantTreasure.aspx?param=TOK|<html/>",
+            ),                                                   # get_dialog_url (tourl) POST
+            httpx.Response(200, text="9.99@0.00|<html/>"),       # post_getscoreuserid POST
+        ]
+    )
+    respx.get(f"{BASE}/Module/AccountManager/GrantTreasure.aspx?param=TOK").mock(
+        return_value=httpx.Response(200, text=_DIALOG_HTML)
+    )
+    respx.post(f"{BASE}/Module/AccountManager/GrantTreasure.aspx?param=TOK").mock(
+        return_value=httpx.Response(
+            200, text='<script>showAlter("Confirmed successful","Balance:30");</script>',
+        )
+    )
+    rec = DiagnosticsRecorder()
+    async with httpx.AsyncClient(base_url=BASE) as http:
+        c = _client(http, diagnostics=rec)   # no session seeded -> forces login
+        pairs = await c.search_account("Saud_Doe892")
+        dialog_url, _token = await c.get_dialog_url(tourl=0, uid="21041615", gid="21219386")
+        await c.submit_dialog(dialog_url=dialog_url, extra_fields={"txtAddGold": "1", "txtReason": ""})
+        await c.post_getscoreuserid("21041615")
+    assert pairs == [("21041615", "21219386")]
+    snap = rec.snapshot()
+    names = [s["name"] for s in snap["steps"]]
+    for expected in (
+        "resolve.accounts_list_get", "resolve.search_post",
+        "dialog.tourl_post", "dialog.get", "dialog.post",
+        "balance.getscore_post",
+    ):
+        assert expected in names, f"{expected!r} missing from recorded steps {names}"
+    for expected in ("login.page", "login.captcha_img", "login.captcha_solve", "login.submit"):
+        assert expected in names, f"{expected!r} missing from recorded steps {names}"
+    captcha_step = next(s for s in snap["steps"] if s["name"] == "login.captcha_solve")
+    assert captcha_step["external"] is True
+    assert captcha_step["http"] is False
+    assert snap["session_reuse"] == "fresh"
+
+
+@respx.mock
+async def test_create_account_helper_records_create_get_and_post_steps():
+    """create.get/create.post are named by the caller (the backend), not the client —
+    exercise request_text directly the way create_account does, to lock the contract."""
+    store = InMemoryCookieSessionStore()
+    await store.set(42, CachedSession(cookie="C", expires_at=int(time.time()) + 3600), ttl_seconds=3600)
+    respx.get(__import__("re").compile(r".*CreateAccount\.aspx.*")).mock(
+        return_value=httpx.Response(200, text=_DIALOG_HTML)
+    )
+    respx.post(__import__("re").compile(r".*CreateAccount\.aspx.*")).mock(
+        return_value=httpx.Response(200, text='<script>testAlter("Added successfully");</script>')
+    )
+    rec = DiagnosticsRecorder()
+    async with httpx.AsyncClient(base_url=BASE) as http:
+        c = _client(http, store=store, diagnostics=rec)
+        await c.request_text("GET", "/Module/AccountManager/CreateAccount.aspx",
+                             params={"time": "x"}, step="create.get", phase="primary")
+        await c.request_text("POST", "/Module/AccountManager/CreateAccount.aspx",
+                             params={"time": "x"}, form={}, step="create.post", phase="primary")
+    names = [s["name"] for s in rec.snapshot()["steps"]]
+    assert "create.get" in names
+    assert "create.post" in names

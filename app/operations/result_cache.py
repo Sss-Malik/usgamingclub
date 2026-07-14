@@ -9,6 +9,7 @@ class CachedOutcome:
     status: str               # "succeeded" | "failed" | "error"
     result: dict | None       # present when succeeded
     reason: str | None        # present when failed/error
+    detail: dict | None = None  # replay-stable diagnostics subset (failed/succeeded only)
     # NOTE: only "succeeded" and "failed" are written to the cache. "error" (transient
     # backend failures + retry_blocked) is never cached so a worker re-run can retry safely.
 
@@ -46,10 +47,10 @@ class RedisResultCache:
         if raw is None:
             return None
         d = json.loads(raw)
-        return CachedOutcome(status=d["status"], result=d.get("result"), reason=d.get("reason"))
+        return CachedOutcome(status=d["status"], result=d.get("result"), reason=d.get("reason"), detail=d.get("detail"))
 
     async def set(self, key: str, outcome: CachedOutcome, ttl_seconds: int) -> None:
         raw = json.dumps(
-            {"status": outcome.status, "result": outcome.result, "reason": outcome.reason}
+            {"status": outcome.status, "result": outcome.result, "reason": outcome.reason, "detail": outcome.detail}
         )
         await self._redis.set(self._key(key), raw, ex=ttl_seconds)

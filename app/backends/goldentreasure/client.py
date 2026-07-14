@@ -6,6 +6,7 @@ import time
 import httpx
 
 from app.backends.base import BackendError, TransientBackendError
+from app.backends.diagnostics import NULL_RECORDER
 from app.backends.goldentreasure.crypto import (
     aes_b64,
     login_aes_key,
@@ -48,6 +49,7 @@ class GoldenTreasureClient:
         redis,                                             # raw redis client for the throttle
         game_id: int,
         fingerprint: str = "db3bb59096022abb85b4612d53387101",
+        diagnostics=None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._username = username
@@ -57,6 +59,7 @@ class GoldenTreasureClient:
         self._redis = redis
         self._game_id = game_id
         self._fingerprint = fingerprint
+        self._diag = diagnostics or NULL_RECORDER
 
     # ---- session management ----
 
@@ -67,12 +70,16 @@ class GoldenTreasureClient:
         """
         cached = await self._session.get(self._game_id)
         if cached and cached.token != invalidate:
+            self._diag.session_event("relogin" if invalidate else "hit")
             return cached.token
         async with self._session.login_lock(self._game_id, ttl_seconds=10, acquire_timeout=10.0):
             cached = await self._session.get(self._game_id)
             if cached and cached.token != invalidate:
+                self._diag.session_event("relogin" if invalidate else "hit")
                 return cached.token
-            token = await self._do_login()
+            async with self._diag.step("login.submit", phase="auth"):
+                token = await self._do_login()
+            self._diag.session_event("relogin" if invalidate else "fresh")
             # Token expiry isn't returned; pick a generous TTL (24h). Relogin on -3/-17 anyway.
             await self._session.set(
                 self._game_id,
@@ -102,11 +109,13 @@ class GoldenTreasureClient:
         if code in (30100, 30200, 30201):
             slug = {30100: "system_verify", 30200: "google_auth_bind", 30201: "google_auth_verify"}[code]
             raise BackendError(f"gtreasure:requires_operator_action_{slug}")
-        reason, terminal = map_response(
+        reason, terminal, resp_code, msg = map_response(
             int(code) if isinstance(code, int) else 0,
             str(body_json.get("message", "")),
         )
-        raise (BackendError if terminal else TransientBackendError)(reason)
+        raise (BackendError if terminal else TransientBackendError)(
+            reason, provider_http_status=200, provider_code=resp_code, provider_message=msg,
+        )
 
     # ---- throttle (mutating ops only) ----
 
@@ -140,9 +149,13 @@ class GoldenTreasureClient:
         except httpx.HTTPError as exc:
             raise TransientBackendError(f"gtreasure:transport:{type(exc).__name__}") from exc
         if resp.status_code >= 500:
-            raise TransientBackendError(f"gtreasure:http_{resp.status_code}")
+            raise TransientBackendError(
+                f"gtreasure:http_{resp.status_code}", provider_http_status=resp.status_code,
+            )
         if resp.status_code >= 300:
-            raise BackendError(f"gtreasure:http_{resp.status_code}")
+            raise BackendError(
+                f"gtreasure:http_{resp.status_code}", provider_http_status=resp.status_code,
+            )
         try:
             return resp.json()
         except ValueError as exc:
@@ -150,24 +163,46 @@ class GoldenTreasureClient:
 
     # ---- authenticated call (relogin on -3/-17/52 + optional throttle) ----
 
-    async def call(self, path: str, params: dict, *, throttle: bool = False) -> dict:
+    async def call(
+        self, path: str, params: dict, *,
+        throttle: bool = False, step: str = "primary", phase: str = "primary",
+    ) -> dict:
         if throttle:
-            await self._acquire_throttle()
+            async with self._diag.step("throttle.acquire", phase="preflight", http=False):
+                await self._acquire_throttle()
         token = await self.get_token()
         body = {**params, "token": token}
         sign, stime = sign_body(body)
-        body_json = await self._post_raw(path, {**body, "sign": sign, "stime": stime}, authenticated=True)
+        async with self._diag.step(step, phase=phase):
+            body_json = await self._post_raw(
+                path, {**body, "sign": sign, "stime": stime}, authenticated=True,
+            )
         if body_json.get("code") in _AUTH_DEAD_CODES:
-            fresh = await self.get_token(invalidate=token)
-            body["token"] = fresh
-            sign, stime = sign_body(body)
-            body_json = await self._post_raw(path, {**body, "sign": sign, "stime": stime}, authenticated=True)
+            # Preserve the origin (first) failure's code/message: if the relogin+retry also
+            # fails, the raised gtreasure:auth_failed should report what actually happened
+            # initially, not merely that auth was dead twice.
+            origin_code = body_json.get("code")
+            origin_message = str(body_json.get("message", ""))
+            async with self._diag.step("recovery.relogin", phase="recovery"):
+                fresh = await self.get_token(invalidate=token)
+                body["token"] = fresh
+                sign, stime = sign_body(body)
+                body_json = await self._post_raw(
+                    path, {**body, "sign": sign, "stime": stime}, authenticated=True,
+                )
             if body_json.get("code") in _AUTH_DEAD_CODES:
-                raise BackendError("gtreasure:auth_failed")
+                raise BackendError(
+                    "gtreasure:auth_failed",
+                    provider_http_status=200,
+                    provider_code=origin_code,
+                    provider_message=origin_message,
+                )
         if body_json.get("code") == 20000:
             return body_json
-        reason, terminal = map_response(
+        reason, terminal, resp_code, msg = map_response(
             int(body_json.get("code", 0)) if isinstance(body_json.get("code"), int) else 0,
             str(body_json.get("message", "")),
         )
-        raise (BackendError if terminal else TransientBackendError)(reason)
+        raise (BackendError if terminal else TransientBackendError)(
+            reason, provider_http_status=200, provider_code=resp_code, provider_message=msg,
+        )

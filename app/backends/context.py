@@ -1,6 +1,8 @@
 # app/backends/context.py
 from dataclasses import dataclass
 
+from app.backends.diagnostics import NULL_RECORDER, DiagnosticsRecorder
+
 
 @dataclass(frozen=True)
 class GameCredentials:
@@ -33,3 +35,10 @@ class BackendContext:
     account: AccountIdentity | None
     idempotency_key: str = ""
     account_username: str | None = None
+    diagnostics: DiagnosticsRecorder | None = None
+    op_id: str | None = None
+    attempt: int = 1
+
+    @property
+    def diag(self) -> DiagnosticsRecorder:
+        return self.diagnostics or NULL_RECORDER

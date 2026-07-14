@@ -1,6 +1,6 @@
 from app.operations.result_cache import CachedOutcome
 from app.schemas.requests import Operation
-from app.webhook.payload import build_webhook_payload
+from app.webhook.payload import assemble_diagnostics, build_webhook_payload
 
 GENERIC = "Something went wrong. Please try again later."
 
@@ -59,3 +59,66 @@ def test_read_success_balance_dollars():
     out = CachedOutcome("succeeded", {"balance": 127.5}, None)
     body = build_webhook_payload(op, out, backend_id=1)
     assert body["read_id"] == 5 and body["user_data"] == {"balance": 127.5}
+
+
+def test_assemble_omits_untruthful_fields():
+    d = assemble_diagnostics(op_id=None, idempotency_key="read:1", attempt=1,
+                             cache_hit=False, duration_ms=12)
+    assert d == {"idempotency_key": "read:1", "attempt": 1, "cache_hit": False,
+                 "duration_ms": 12, "steps": []}
+    assert "op_id" not in d and "session_reuse" not in d and "provider" not in d
+
+
+def test_assemble_includes_failure_and_provider():
+    snap = {"steps": [{"name": "recharge.post", "phase": "primary", "http": True,
+                       "external": False, "ok": False, "ms": 800}],
+            "session_reuse": "hit", "external_user_id": None,
+            "balance_before": None, "balance_after": None}
+    d = assemble_diagnostics(op_id="01J", idempotency_key="recharge:1", attempt=1,
+                             cache_hit=False, duration_ms=900, snapshot=snap,
+                             failure_kind="backend",
+                             reason="gamevault:7:insufficient_user_balance",
+                             provider={"http_status": 200, "code": "7", "message": "no funds"})
+    assert d["op_id"] == "01J"
+    assert d["session_reuse"] == "hit"
+    assert d["failure_kind"] == "backend"
+    assert d["reason"] == "gamevault:7:insufficient_user_balance"
+    assert d["provider"] == {"http_status": 200, "code": "7", "message": "no funds"}
+    assert d["steps"][0]["name"] == "recharge.post"
+    assert "external_user_id" not in d  # None → omitted
+
+
+def test_assemble_drops_empty_provider():
+    d = assemble_diagnostics(op_id=None, idempotency_key="k", attempt=1, cache_hit=False,
+                             duration_ms=1, failure_kind="transient", reason="gamevault_http_503",
+                             provider={"http_status": None, "code": None, "message": None})
+    assert "provider" not in d
+
+
+def test_build_payload_without_diagnostics_is_legacy_shape():
+    op = _op("read", "READ_BALANCE", correlation={"read_id": 5})
+    out = CachedOutcome("succeeded", {"balance": 127.5}, None)
+    body = build_webhook_payload(op, out, backend_id=1)
+    assert "diagnostics" not in body and "op_id" not in body
+
+
+def test_build_payload_attaches_diagnostics_and_top_level_op_id():
+    op = _op("read", "READ_BALANCE", correlation={"read_id": 5}, op_id="01J")
+    out = CachedOutcome("succeeded", {"balance": 127.5}, None)
+    diag = {"idempotency_key": "read:1", "attempt": 1, "cache_hit": False,
+            "duration_ms": 3, "steps": [], "op_id": "01J"}
+    body = build_webhook_payload(op, out, backend_id=1, diagnostics=diag)
+    assert body["op_id"] == "01J"
+    assert body["diagnostics"] is diag
+    assert body["message"] == ""  # unchanged
+
+
+def test_error_message_still_generic_but_reason_can_differ():
+    op = _op("recharge", "RECHARGE", amount=5, correlation={"transaction_id": "t"})
+    out = CachedOutcome("error", None, "backend_error: gamevault_http_503")
+    diag = {"idempotency_key": "recharge:t", "attempt": 1, "cache_hit": False,
+            "duration_ms": 5, "steps": [], "failure_kind": "transient",
+            "reason": "gamevault_http_503"}
+    body = build_webhook_payload(op, out, backend_id=1, diagnostics=diag)
+    assert body["message"] == GENERIC
+    assert body["diagnostics"]["reason"] == "gamevault_http_503"

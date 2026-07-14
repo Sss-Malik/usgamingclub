@@ -4,6 +4,7 @@ import json
 import httpx
 import respx
 
+from app.backends.base import BackendError
 from app.config import Settings
 from app.operations.executor import execute_operation
 from app.operations.result_cache import CachedOutcome, InMemoryResultCache
@@ -62,7 +63,7 @@ async def test_success_is_cached(seeded):
 async def test_invalid_result_payload_is_cached(seeded):
     # A backend that returns a value failing result validation is a terminal state and must be
     # cached, so a worker re-run does not re-call the backend (money-op safety).
-    respx.post(WEBHOOK).mock(return_value=httpx.Response(200, json={"ok": True}))
+    route = respx.post(WEBHOOK).mock(return_value=httpx.Response(200, json={"ok": True}))
     cache = InMemoryResultCache()
 
     class BadBackend:
@@ -78,6 +79,43 @@ async def test_invalid_result_payload_is_cached(seeded):
                                 result_cache=cache, resolve=fake_resolve)
     cached = await cache.get("read:bad")
     assert cached is not None and cached.status == "failed" and "invalid_result_payload" in cached.reason
+    body = json.loads(route.calls.last.request.content.decode())
+    assert body["status"] == "failed"
+    assert body["diagnostics"]["failure_kind"] == "invalid_result"
+
+
+@respx.mock
+async def test_invalid_result_payload_reports_snapshot_fields_live_and_replay(seeded):
+    # Live delivery must derive external_user_id/balance_before/balance_after from the recorder
+    # snapshot (not hardcode None), and a cache replay must agree with the live delivery (fix D).
+    route = respx.post(WEBHOOK).mock(return_value=httpx.Response(200, json={"ok": True}))
+    cache = InMemoryResultCache()
+
+    class BadBackend:
+        async def read_balance(self, ctx):
+            ctx.diag.mark_external_user_id("42:99")
+            ctx.diag.mark_balance_before(10.0)
+            return ReadBalanceResult(balance=-1)  # raises ValidationError (ge=0) on construction
+
+    def fake_resolve(driver, **kwargs):
+        return BadBackend()
+
+    payload = _read_payload("read:invalid-snap")
+    async with httpx.AsyncClient() as client:
+        await execute_operation(payload, session_factory=seeded, http_client=client,
+                                settings=_settings(), result_cache=cache, resolve=fake_resolve)
+    live = json.loads(route.calls.last.request.content.decode())
+    assert live["diagnostics"]["failure_kind"] == "invalid_result"
+    assert live["diagnostics"]["external_user_id"] == "42:99"
+    assert live["diagnostics"]["balance_before"] == 10.0
+
+    async with httpx.AsyncClient() as client:
+        await execute_operation(payload, session_factory=seeded, http_client=client,
+                                settings=_settings(), result_cache=cache, resolve=fake_resolve)
+    replay = json.loads(route.calls.last.request.content.decode())
+    assert replay["diagnostics"]["cache_hit"] is True
+    assert replay["diagnostics"]["external_user_id"] == live["diagnostics"]["external_user_id"]
+    assert replay["diagnostics"]["balance_before"] == live["diagnostics"]["balance_before"]
 
 
 @respx.mock
@@ -92,6 +130,7 @@ async def test_gameroom_without_session_store_reports_failure(seeded):
                                 settings=_settings(), result_cache=cache, session_store=None)
     body = json.loads(route.calls.last.request.content.decode())
     assert body["status"] == "failed" and "missing_session_store" in body["message"]
+    assert body["diagnostics"]["failure_kind"] == "preflight"
     assert await cache.get("gr-no-store") is None              # config error -> not cached
 
 
@@ -106,6 +145,7 @@ async def test_goldentreasure_without_redis_reports_failure(seeded):
                                 settings=_settings(), result_cache=cache, redis=None)
     body = json.loads(route.calls.last.request.content.decode())
     assert body["status"] == "failed" and "missing_redis_client" in body["message"]
+    assert body["diagnostics"]["failure_kind"] == "preflight"
     assert await cache.get("gt-no-redis") is None        # config error -> not cached
 
 
@@ -136,3 +176,35 @@ async def test_retry_blocked_reports_error_without_calling_backend(seeded):
     assert body["status"] == "error" and "Something went wrong" in body["message"]
     # NOT cached — the operation may have been applied on the prior attempt.
     assert await cache.get("rb-1") is None
+
+
+@respx.mock
+async def test_cache_replay_reports_cache_hit_and_no_steps(seeded):
+    # First run fails terminally (cached); second run replays.
+    route = respx.post(WEBHOOK).mock(return_value=httpx.Response(200, json={"ok": True}))
+    cache = InMemoryResultCache()
+
+    class FailingBackend:
+        async def read_balance(self, ctx):
+            raise BackendError("mock:insufficient")
+
+    def fake_resolve(driver, **kwargs):
+        return FailingBackend()
+
+    payload = _read_payload("read:cache-diag")
+
+    async with httpx.AsyncClient() as client:
+        await execute_operation(payload, session_factory=seeded, http_client=client,
+                                settings=_settings(), result_cache=cache, resolve=fake_resolve)
+    first = json.loads(route.calls.last.request.content.decode())
+
+    async with httpx.AsyncClient() as client:
+        await execute_operation(payload, session_factory=seeded, http_client=client,
+                                settings=_settings(), result_cache=cache, resolve=fake_resolve)
+    second = json.loads(route.calls.last.request.content.decode())
+
+    d = second["diagnostics"]
+    assert d["cache_hit"] is True
+    assert d["steps"] == []
+    assert d["failure_kind"] == first["diagnostics"]["failure_kind"]
+    assert d["reason"] == first["diagnostics"]["reason"]

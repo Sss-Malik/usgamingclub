@@ -23,6 +23,9 @@ async def build_context(
     user_id: int | None,
     idempotency_key: str = "",
     account_username: str | None = None,
+    diagnostics=None,
+    op_id: str | None = None,
+    attempt: int = 1,
 ) -> BackendContext:
     game = await GamesRepository(session).get_by_name(backend_name)
     if game is None:
@@ -74,4 +77,7 @@ async def build_context(
         account=account,
         idempotency_key=idempotency_key,
         account_username=account_username,
+        diagnostics=diagnostics,
+        op_id=op_id,
+        attempt=attempt,
     )

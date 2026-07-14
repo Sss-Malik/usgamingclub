@@ -7,16 +7,18 @@ import pytest
 import respx
 
 from app.backends.base import BackendError, TransientBackendError
+from app.backends.diagnostics import DiagnosticsRecorder
 from app.backends.gameroom.client import GameroomClient
 from app.backends.gameroom.session import CachedSession, InMemorySessionStore
 
 BASE = "https://gr.test"
 
 
-def _client(http, store=None):
+def _client(http, store=None, diagnostics=None):
     return GameroomClient(
         base_url=BASE, username="u", password="p",
         http_client=http, session_store=store or InMemorySessionStore(), game_id=11,
+        diagnostics=diagnostics,
     )
 
 
@@ -239,3 +241,128 @@ async def test_call_raw_http_5xx_is_transient():
     async with httpx.AsyncClient() as http:
         with pytest.raises(TransientBackendError):
             await _client(http).call_raw("GET", "/api/player/userList", params={"account": "x"})
+
+
+# --- diagnostics: session events ---
+
+@respx.mock
+async def test_get_token_cache_hit_emits_session_hit():
+    route = respx.post(f"{BASE}/api/login").mock(return_value=httpx.Response(200, json=_login_ok("Tx")))
+    store = InMemorySessionStore()
+    await store.set(11, CachedSession(token="cached", expires_at=int(time.time()) + 3600), ttl_seconds=3600)
+    rec = DiagnosticsRecorder()
+    async with httpx.AsyncClient() as http:
+        token = await _client(http, store=store, diagnostics=rec).get_token()
+    assert token == "cached"
+    assert route.call_count == 0
+    assert rec.snapshot()["session_reuse"] == "hit"
+
+
+@respx.mock
+async def test_get_token_fresh_login_emits_session_fresh_and_login_submit_step():
+    respx.post(f"{BASE}/api/login").mock(return_value=httpx.Response(200, json=_login_ok("Tnew")))
+    rec = DiagnosticsRecorder()
+    async with httpx.AsyncClient() as http:
+        token = await _client(http, diagnostics=rec).get_token()
+    assert token == "Tnew"
+    snap = rec.snapshot()
+    assert snap["session_reuse"] == "fresh"
+    steps = {s["name"]: s for s in snap["steps"]}
+    assert "login.submit" in steps
+    assert steps["login.submit"]["phase"] == "auth"
+    assert steps["login.submit"]["ok"] is True
+
+
+@respx.mock
+async def test_call_410_relogin_emits_session_relogin_and_recovery_step():
+    respx.post(f"{BASE}/api/login").mock(side_effect=[
+        httpx.Response(200, json=_login_ok("Told")),               # initial login
+        httpx.Response(200, json=_login_ok("Tnew")),               # re-login after 410
+    ])
+    respx.post(f"{BASE}/api/agent/getMoney").mock(side_effect=[
+        httpx.Response(200, json={"status_code": 410, "message": "Please login again"}),
+        httpx.Response(200, json={"status_code": 200, "message": "ok", "data": {"money": "5.00"}}),
+    ])
+    rec = DiagnosticsRecorder()
+    async with httpx.AsyncClient() as http:
+        data = await _client(http, diagnostics=rec).call(
+            "POST", "/api/agent/getMoney", step="balance.read", phase="primary")
+    assert data == {"money": "5.00"}
+    snap = rec.snapshot()
+    assert snap["session_reuse"] == "relogin"
+    names = [s["name"] for s in snap["steps"]]
+    assert "recovery.relogin" in names
+    assert "balance.read" in names
+
+
+# --- diagnostics: named steps on call()/call_raw() ---
+
+@respx.mock
+async def test_call_records_the_given_step_name():
+    respx.post(f"{BASE}/api/login").mock(return_value=httpx.Response(200, json=_login_ok("T")))
+    respx.post(f"{BASE}/api/agent/getMoney").mock(return_value=httpx.Response(
+        200, json={"status_code": 200, "message": "ok", "data": {"money": "5.00"}}))
+    rec = DiagnosticsRecorder()
+    async with httpx.AsyncClient() as http:
+        await _client(http, diagnostics=rec).call(
+            "POST", "/api/agent/getMoney", step="agent_balance.read", phase="primary")
+    steps = {s["name"]: s for s in rec.snapshot()["steps"]}
+    assert "agent_balance.read" in steps
+    assert steps["agent_balance.read"]["phase"] == "primary"
+
+
+@respx.mock
+async def test_call_raw_records_the_given_step_name():
+    respx.post(f"{BASE}/api/login").mock(return_value=httpx.Response(200, json=_login_ok("T")))
+    respx.get(f"{BASE}/api/player/userList").mock(return_value=httpx.Response(
+        200, json={"status_code": 200, "message": "ok", "data": [{"id": 1, "Account": "x"}]}))
+    rec = DiagnosticsRecorder()
+    async with httpx.AsyncClient() as http:
+        await _client(http, diagnostics=rec).call_raw(
+            "GET", "/api/player/userList", params={"account": "x"},
+            step="resolve.user_id", phase="resolve")
+    steps = {s["name"]: s for s in rec.snapshot()["steps"]}
+    assert "resolve.user_id" in steps
+    assert steps["resolve.user_id"]["phase"] == "resolve"
+
+
+# --- diagnostics: provider fields on envelope errors ---
+
+@respx.mock
+async def test_business_error_carries_envelope_code_and_untruncated_message():
+    respx.post(f"{BASE}/api/login").mock(return_value=httpx.Response(200, json=_login_ok("T")))
+    long_msg = "z" * 200                                            # forces slug truncation to 80 chars
+    respx.post(f"{BASE}/api/player/playerInsert").mock(return_value=httpx.Response(
+        200, json={"status_code": 400, "message": long_msg}))
+    async with httpx.AsyncClient() as http:
+        with pytest.raises(BackendError) as ei:
+            await _client(http).call(
+                "POST", "/api/player/playerInsert", fields={"username": "x"}, step="create.post")
+    assert ei.value.provider_http_status == 200                     # transport status (envelope is HTTP 200)
+    assert ei.value.provider_code == 400                             # envelope status_code
+    assert ei.value.provider_message == long_msg                     # untruncated, unlike the reason slug
+    assert len(ei.value.reason) < len(long_msg)
+
+
+@respx.mock
+async def test_call_raw_business_error_carries_provider_fields():
+    respx.post(f"{BASE}/api/login").mock(return_value=httpx.Response(200, json=_login_ok("T")))
+    respx.get(f"{BASE}/api/player/userList").mock(return_value=httpx.Response(
+        200, json={"status_code": 400, "message": "Operation failed"}))
+    async with httpx.AsyncClient() as http:
+        with pytest.raises(BackendError) as ei:
+            await _client(http).call_raw(
+                "GET", "/api/player/userList", params={"account": "x"},
+                step="resolve.user_id", phase="resolve")
+    assert ei.value.provider_code == 400
+    assert ei.value.provider_message == "Operation failed"
+
+
+@respx.mock
+async def test_call_500_carries_provider_http_status():
+    respx.post(f"{BASE}/api/login").mock(return_value=httpx.Response(200, json=_login_ok("T")))
+    respx.post(f"{BASE}/api/agent/getMoney").mock(return_value=httpx.Response(500))
+    async with httpx.AsyncClient() as http:
+        with pytest.raises(TransientBackendError) as ei:
+            await _client(http).call("POST", "/api/agent/getMoney")
+    assert ei.value.provider_http_status == 500

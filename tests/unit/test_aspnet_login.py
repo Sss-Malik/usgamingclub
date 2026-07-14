@@ -4,6 +4,7 @@ import respx
 
 from app.backends.base import BackendError
 from app.backends._aspnet_cashier.login import login
+from app.backends.diagnostics import DiagnosticsRecorder
 from tests.conftest import FakeCaptchaSolver
 
 BASE = "https://os.test"
@@ -168,6 +169,21 @@ async def test_login_terminal_on_bad_credentials():
     assert ei.value.reason == "orionstars:login_failed:bad_credentials"
 
 
+@respx.mock
+async def test_login_terminal_failure_sets_provider_code_to_errtype():
+    respx.get(f"{BASE}/default.aspx").mock(return_value=_login_page_response())
+    respx.get(f"{BASE}/Tools/VerifyImagePage.aspx?12345").mock(return_value=_captcha_image_response())
+    respx.post(f"{BASE}/default.aspx").mock(return_value=_login_bad_creds_response())
+    async with httpx.AsyncClient(base_url=BASE) as http:
+        with pytest.raises(BackendError) as ei:
+            await login(
+                http=http, base_url=BASE, username="u", password="p",
+                captcha_solver=FakeCaptchaSolver(), max_attempts=3,
+                driver_prefix="orionstars",
+            )
+    assert ei.value.provider_code == "errorNamePassowrd"
+
+
 # --- regression: cookie jar must be cleared between retries ---
 
 @respx.mock
@@ -239,3 +255,42 @@ async def test_login_handles_absolute_path_captcha_src():
             captcha_solver=FakeCaptchaSolver(answers=["34596"]), max_attempts=1,
         )
     assert cookie == "ABS"
+
+
+# --- diagnostics: login sub-steps ---
+
+@respx.mock
+async def test_login_records_four_diagnostics_substeps():
+    respx.get(f"{BASE}/default.aspx").mock(return_value=_login_page_response())
+    respx.get(f"{BASE}/Tools/VerifyImagePage.aspx?12345").mock(return_value=_captcha_image_response())
+    respx.post(f"{BASE}/default.aspx").mock(return_value=_login_success_response())
+    rec = DiagnosticsRecorder()
+    async with httpx.AsyncClient(base_url=BASE) as http:
+        cookie = await login(
+            http=http, base_url=BASE, username="u", password="p",
+            captcha_solver=FakeCaptchaSolver(answers=["34596"]), max_attempts=1,
+            diag=rec,
+        )
+    assert cookie == "COOKIE_FIRST"
+    steps = {s["name"]: s for s in rec.snapshot()["steps"]}
+    assert steps["login.page"]["phase"] == "auth"
+    assert steps["login.page"]["http"] is True
+    assert steps["login.captcha_img"]["phase"] == "auth"
+    assert steps["login.submit"]["phase"] == "auth"
+
+
+@respx.mock
+async def test_login_captcha_solve_step_is_external_and_not_http():
+    respx.get(f"{BASE}/default.aspx").mock(return_value=_login_page_response())
+    respx.get(f"{BASE}/Tools/VerifyImagePage.aspx?12345").mock(return_value=_captcha_image_response())
+    respx.post(f"{BASE}/default.aspx").mock(return_value=_login_success_response())
+    rec = DiagnosticsRecorder()
+    async with httpx.AsyncClient(base_url=BASE) as http:
+        await login(
+            http=http, base_url=BASE, username="u", password="p",
+            captcha_solver=FakeCaptchaSolver(answers=["34596"]), max_attempts=1,
+            diag=rec,
+        )
+    steps = {s["name"]: s for s in rec.snapshot()["steps"]}
+    assert steps["login.captcha_solve"]["external"] is True
+    assert steps["login.captcha_solve"]["http"] is False

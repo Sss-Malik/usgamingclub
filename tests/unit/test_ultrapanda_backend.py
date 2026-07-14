@@ -6,6 +6,7 @@ import respx
 
 from app.backends.base import BackendError, TransientBackendError
 from app.backends.context import AccountIdentity, BackendContext, GameCredentials
+from app.backends.diagnostics import DiagnosticsRecorder
 from app.backends.ultrapanda.backend import UltraPandaBackend
 from app.backends.ultrapanda.client import UltraPandaClient
 from app.backends.ultrapanda.session import CachedSession, InMemoryTokenStore
@@ -30,14 +31,15 @@ def _account(username: str = "userup01") -> AccountIdentity:
     )
 
 
-def _ctx(*, account=None, username=None) -> BackendContext:
+def _ctx(*, account=None, username=None, diagnostics=None) -> BackendContext:
     return BackendContext(
         credentials=_credentials(), user_id=1, account=account,
         idempotency_key="idem", account_username=username,
+        diagnostics=diagnostics,
     )
 
 
-def _make_backend(http, fake_redis):
+def _make_backend(http, fake_redis, *, diagnostics=None):
     store = InMemoryTokenStore()
     client = UltraPandaClient(
         base_url=BASE, username="u", password="p",
@@ -46,6 +48,7 @@ def _make_backend(http, fake_redis):
         throttle_ttl_seconds=6, throttle_acquire_timeout_seconds=2.0,
         session_lock_ttl_seconds=10, session_lock_acquire_timeout_seconds=2.0,
         driver_prefix="ultrapanda",
+        diagnostics=diagnostics,
     )
     return UltraPandaBackend(client), store
 
@@ -215,3 +218,134 @@ async def test_recharge_167_rate_limit_is_transient(fake_redis):
         await _seed_session(store)
         with pytest.raises(TransientBackendError, match="rate_limited"):
             await backend.recharge(_ctx(account=_account("u01")), amount=1)
+
+
+# --- diagnostics: provider_code on the backend's business-code raise (no message) ---
+
+@respx.mock
+async def test_recharge_business_error_carries_provider_code_no_message(fake_redis):
+    respx.post(f"{BASE}/account/enterScore").mock(
+        return_value=httpx.Response(200, json={"code": 21, "message": "充值失败：服务器维护中"})
+    )
+    async with httpx.AsyncClient(base_url=BASE) as http:
+        backend, store = _make_backend(http, fake_redis)
+        await _seed_session(store)
+        with pytest.raises(BackendError) as ei:
+            await backend.recharge(_ctx(account=_account("u01")), amount=1)
+    assert ei.value.reason == "ultrapanda:insufficient_agent_funds"
+    assert ei.value.provider_http_status == 200
+    assert ei.value.provider_code == 21
+    assert ei.value.provider_message is None          # the vpower API returns no message field
+
+
+@respx.mock
+async def test_read_balance_business_error_carries_provider_code_transient(fake_redis):
+    respx.post(f"{BASE}/account/getPlayerScore").mock(
+        return_value=httpx.Response(200, json={"code": 167, "message": "high frequency request"})
+    )
+    async with httpx.AsyncClient(base_url=BASE) as http:
+        backend, store = _make_backend(http, fake_redis)
+        await _seed_session(store)
+        with pytest.raises(TransientBackendError) as ei:
+            await backend.read_balance(_ctx(account=_account("u01")))
+    assert ei.value.provider_http_status == 200
+    assert ei.value.provider_code == 167
+    assert ei.value.provider_message is None
+
+
+# --- diagnostics: named steps recorded through the backend ----
+
+@respx.mock
+async def test_create_account_records_create_post_step(fake_redis):
+    respx.post(f"{BASE}/account/savePlayer").mock(
+        return_value=httpx.Response(200, json={"code": 20000, "message": "新增玩家成功"})
+    )
+    rec = DiagnosticsRecorder()
+    async with httpx.AsyncClient(base_url=BASE) as http:
+        backend, store = _make_backend(http, fake_redis, diagnostics=rec)
+        await _seed_session(store)
+        await backend.create_account(_ctx(username="newuser01"))
+    names = [s["name"] for s in rec.snapshot()["steps"]]
+    assert "create.post" in names
+
+
+@respx.mock
+async def test_read_balance_records_balance_read_step(fake_redis):
+    respx.post(f"{BASE}/account/getPlayerScore").mock(
+        return_value=httpx.Response(200, json={"code": 20000, "curScore": 5})
+    )
+    rec = DiagnosticsRecorder()
+    async with httpx.AsyncClient(base_url=BASE) as http:
+        backend, store = _make_backend(http, fake_redis, diagnostics=rec)
+        await _seed_session(store)
+        await backend.read_balance(_ctx(account=_account("u01")))
+    names = [s["name"] for s in rec.snapshot()["steps"]]
+    assert "balance.read" in names
+    assert "throttle.acquire" not in names               # read is not a mutating op
+
+
+@respx.mock
+async def test_reset_password_records_reset_post_step_without_throttle(fake_redis):
+    respx.post(f"{BASE}/account/updatePlayer").mock(
+        return_value=httpx.Response(200, json={"code": 20000, "message": "编辑玩家成功",
+                                               "info": {"Account": "u01"}})
+    )
+    rec = DiagnosticsRecorder()
+    async with httpx.AsyncClient(base_url=BASE) as http:
+        backend, store = _make_backend(http, fake_redis, diagnostics=rec)
+        await _seed_session(store)
+        await backend.reset_password(_ctx(account=_account("u01")))
+    names = [s["name"] for s in rec.snapshot()["steps"]]
+    assert "reset.post" in names
+    assert "throttle.acquire" not in names
+
+
+@respx.mock
+async def test_recharge_records_throttle_and_recharge_post_steps(fake_redis):
+    respx.post(f"{BASE}/account/enterScore").mock(
+        return_value=httpx.Response(200, json={"code": 20000, "message": "进分成功"})
+    )
+    rec = DiagnosticsRecorder()
+    async with httpx.AsyncClient(base_url=BASE) as http:
+        backend, store = _make_backend(http, fake_redis, diagnostics=rec)
+        await _seed_session(store)
+        await backend.recharge(_ctx(account=_account("u01")), amount=50)
+    names = [s["name"] for s in rec.snapshot()["steps"]]
+    assert "throttle.acquire" in names
+    assert "recharge.post" in names
+
+
+@respx.mock
+async def test_redeem_records_throttle_and_redeem_post_steps(fake_redis):
+    respx.post(f"{BASE}/account/enterScore").mock(
+        return_value=httpx.Response(200, json={"code": 20000, "message": "下分成功"})
+    )
+    rec = DiagnosticsRecorder()
+    async with httpx.AsyncClient(base_url=BASE) as http:
+        backend, store = _make_backend(http, fake_redis, diagnostics=rec)
+        await _seed_session(store)
+        await backend.redeem(_ctx(account=_account("u01")), amount=30)
+    names = [s["name"] for s in rec.snapshot()["steps"]]
+    assert "throttle.acquire" in names
+    assert "redeem.post" in names
+
+
+@respx.mock
+async def test_backend_never_marks_external_user_id_or_balance(fake_redis):
+    # savePlayer returns no uid and enterScore returns no balance; getPlayerScore flows via
+    # user_data rather than a diag mark. The backend must not call ctx.diag.mark_* at all for
+    # ultrapanda. Sharing one recorder between ctx and the client (as the real executor does)
+    # means a stray mark_* call anywhere would show up here.
+    respx.post(f"{BASE}/account/savePlayer").mock(
+        return_value=httpx.Response(200, json={"code": 20000, "message": "新增玩家成功"})
+    )
+    rec = DiagnosticsRecorder()
+    async with httpx.AsyncClient(base_url=BASE) as http:
+        backend, store = _make_backend(http, fake_redis, diagnostics=rec)
+        await _seed_session(store)
+        ctx = _ctx(username="markstest", diagnostics=rec)
+        await backend.create_account(ctx)
+    snap = rec.snapshot()
+    assert snap["external_user_id"] is None
+    assert snap["balance_after"] is None
+    assert snap["balance_before"] is None

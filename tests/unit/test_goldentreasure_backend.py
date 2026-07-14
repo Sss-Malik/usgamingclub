@@ -7,6 +7,7 @@ import respx
 
 from app.backends.base import BackendError
 from app.backends.context import AccountIdentity, BackendContext, GameCredentials
+from app.backends.diagnostics import DiagnosticsRecorder
 from app.backends.goldentreasure.backend import GoldenTreasureBackend
 from app.backends.goldentreasure.client import GoldenTreasureClient
 from app.backends.goldentreasure.session import InMemorySessionStore
@@ -25,17 +26,19 @@ def _creds():
 
 
 def _ctx(*, account=True, username="apitest01", idem="idem-1",
-         account_username=None, user_id=61):
+         account_username=None, user_id=61, diagnostics=None):
     acct = AccountIdentity(4001, user_id, 13, username, None) if account else None
     return BackendContext(credentials=_creds(), user_id=user_id, account=acct,
-                          idempotency_key=idem, account_username=account_username)
+                          idempotency_key=idem, account_username=account_username,
+                          diagnostics=diagnostics)
 
 
-def _backend(http, fake_redis):
+def _backend(http, fake_redis, *, diagnostics=None):
     client = GoldenTreasureClient(
         base_url=BASE, username="Test02Gd1WEB", password="Zaeem@1233",
         http_client=http, session_store=InMemorySessionStore(),
         redis=fake_redis, game_id=13,
+        diagnostics=diagnostics,
     )
     return GoldenTreasureBackend(client)
 
@@ -197,3 +200,90 @@ async def test_reset_password_posts_to_updatePlayer_and_does_not_throttle(fake_r
     assert body["pwd"] == r.password
     # RESET_PASSWORD is NOT throttled (spec GT7) — throttle key must NOT be set.
     assert await fake_redis.exists("gtreasure_throttle:13") == 0
+
+
+# ---- diagnostics: named steps recorded through the backend ----
+
+@respx.mock
+async def test_create_account_records_throttle_and_create_post_steps(fake_redis):
+    _mock_login()
+    respx.post(f"{BASE}/api/account/savePlayer").mock(return_value=httpx.Response(
+        200, json={"code": 20000, "message": "ok"}))
+    rec = DiagnosticsRecorder()
+    async with httpx.AsyncClient() as http:
+        await _backend(http, fake_redis, diagnostics=rec).create_account(
+            _ctx(account=False, account_username="apitestthr"))
+    names = [s["name"] for s in rec.snapshot()["steps"]]
+    assert "throttle.acquire" in names
+    assert "create.post" in names
+
+
+@respx.mock
+async def test_read_balance_records_balance_read_step(fake_redis):
+    _mock_login()
+    respx.post(f"{BASE}/api/account/getPlayerScore").mock(return_value=httpx.Response(
+        200, json={"code": 20000, "curScore": 5}))
+    rec = DiagnosticsRecorder()
+    async with httpx.AsyncClient() as http:
+        await _backend(http, fake_redis, diagnostics=rec).read_balance(_ctx())
+    names = [s["name"] for s in rec.snapshot()["steps"]]
+    assert "balance.read" in names
+    assert "throttle.acquire" not in names               # read is not a mutating op
+
+
+@respx.mock
+async def test_reset_password_records_reset_post_step_without_throttle(fake_redis):
+    _mock_login()
+    respx.post(f"{BASE}/api/account/updatePlayer").mock(return_value=httpx.Response(
+        200, json={"code": 20000, "message": "ok"}))
+    rec = DiagnosticsRecorder()
+    async with httpx.AsyncClient() as http:
+        await _backend(http, fake_redis, diagnostics=rec).reset_password(_ctx())
+    names = [s["name"] for s in rec.snapshot()["steps"]]
+    assert "reset.post" in names
+    assert "throttle.acquire" not in names               # NOT throttled (spec GT7)
+
+
+@respx.mock
+async def test_recharge_records_throttle_and_recharge_post_steps(fake_redis):
+    _mock_login()
+    respx.post(f"{BASE}/api/account/enterScore").mock(return_value=httpx.Response(
+        200, json={"code": 20000, "message": "ok"}))
+    rec = DiagnosticsRecorder()
+    async with httpx.AsyncClient() as http:
+        await _backend(http, fake_redis, diagnostics=rec).recharge(_ctx(), amount=50)
+    names = [s["name"] for s in rec.snapshot()["steps"]]
+    assert "throttle.acquire" in names
+    assert "recharge.post" in names
+
+
+@respx.mock
+async def test_redeem_records_throttle_and_redeem_post_steps(fake_redis):
+    _mock_login()
+    respx.post(f"{BASE}/api/account/enterScore").mock(return_value=httpx.Response(
+        200, json={"code": 20000, "message": "ok"}))
+    rec = DiagnosticsRecorder()
+    async with httpx.AsyncClient() as http:
+        await _backend(http, fake_redis, diagnostics=rec).redeem(_ctx(), amount=30)
+    names = [s["name"] for s in rec.snapshot()["steps"]]
+    assert "throttle.acquire" in names
+    assert "redeem.post" in names
+
+
+@respx.mock
+async def test_backend_never_marks_external_user_id_or_balance(fake_redis):
+    # savePlayer returns no uid and enterScore returns no balance -> the backend must not call
+    # ctx.diag.mark_* at all for goldentreasure (unlike gameroom/gamevault). Sharing one recorder
+    # between ctx and the client (as the real executor does) means a stray mark_* call anywhere
+    # would show up here.
+    _mock_login()
+    respx.post(f"{BASE}/api/account/savePlayer").mock(return_value=httpx.Response(
+        200, json={"code": 20000, "message": "ok"}))
+    rec = DiagnosticsRecorder()
+    ctx = _ctx(account=False, account_username="apitestmarks", diagnostics=rec)
+    async with httpx.AsyncClient() as http:
+        await _backend(http, fake_redis, diagnostics=rec).create_account(ctx)
+    snap = rec.snapshot()
+    assert snap["external_user_id"] is None
+    assert snap["balance_after"] is None
+    assert snap["balance_before"] is None

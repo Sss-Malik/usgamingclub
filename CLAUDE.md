@@ -16,8 +16,10 @@ Laravel owns all money/account writes; this service reads the shared MySQL only.
   `juwa2` | `gameroom` | `goldentreasure`. New backends add a module + a `resolve_backend` branch;
   sibling games on an existing provider (e.g. `juwa`/`juwa2` share GameVault's API) are added as an
   alias in the registry.
-- Non-idempotent drivers (no server-side `order_id` dedupe — currently `gameroom`, `goldentreasure`)
-  are listed in `NON_IDEMPOTENT_DRIVERS`. arq has NO `_max_tries` kwarg on `enqueue_job`, so the
+- Non-idempotent drivers (no server-side `order_id` dedupe — every session/scrape backend:
+  `gameroom`, `goldentreasure`, `orionstars`, `milkyway`, `firekirin`, `pandamaster`, `ultrapanda`,
+  `vblink`, `yolo`; only the GameVault/Juwa family and `mock` are idempotent) are listed in
+  `NON_IDEMPOTENT_DRIVERS`. arq has NO `_max_tries` kwarg on `enqueue_job`, so the
   `/operations` endpoint **embeds `_max_tries=1` inside the payload dict**; the worker reads it +
   `ctx["job_try"]` and short-circuits with a `retry_blocked` failure webhook on the retry. Result:
   Laravel learns of the failure in seconds (not 10 min via the reaper), the backend is never re-called.

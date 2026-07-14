@@ -3,6 +3,7 @@ import pytest
 
 from app.backends.base import BackendError
 from app.backends.context import AccountIdentity, BackendContext, GameCredentials
+from app.backends.diagnostics import DiagnosticsRecorder
 from app.backends.mock.backend import MockBackend
 
 
@@ -47,3 +48,32 @@ async def test_fail_mode_raises_backend_error():
     with pytest.raises(BackendError) as ei:
         await b.read_balance(_ctx())
     assert ei.value.reason == "boom"
+
+
+def _ctx_diag(rec):
+    creds = GameCredentials(game_id=1, name="g", backend_url=None, login_page_url=None,
+                            backend_username=None, backend_password=None, api_base_url=None,
+                            api_agent_id=None, api_secret_key=None, binding_key=None)
+    return BackendContext(credentials=creds, user_id=7, account=None,
+                          account_username="u", diagnostics=rec)
+
+
+async def test_mock_recharge_records_single_build_step():
+    rec = DiagnosticsRecorder()
+    await MockBackend().recharge(_ctx_diag(rec), amount=5)
+    snap = rec.snapshot()
+    assert snap["steps"] == [{"name": "recharge.build", "phase": "finalize", "http": False,
+                              "external": False, "ok": True, "ms": snap["steps"][0]["ms"]}]
+    assert snap["session_reuse"] is None
+
+
+async def test_mock_recharge_records_build_step_with_ok_false_on_failure():
+    rec = DiagnosticsRecorder()
+    b = MockBackend(fail=True, fail_reason="test failure")
+    with pytest.raises(BackendError):
+        await b.recharge(_ctx_diag(rec), amount=5)
+    snap = rec.snapshot()
+    assert len(snap["steps"]) == 1
+    assert snap["steps"][0]["name"] == "recharge.build"
+    assert snap["steps"][0]["ok"] is False
+    assert snap["session_reuse"] is None

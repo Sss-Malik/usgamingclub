@@ -4,6 +4,7 @@ import time
 import httpx
 
 from app.backends.base import BackendError, TransientBackendError
+from app.backends.diagnostics import NULL_RECORDER
 from app.backends.ultrapanda.crypto import (
     encrypt_login_cred,
     encrypt_xtoken,
@@ -50,6 +51,7 @@ class UltraPandaClient:
         session_lock_ttl_seconds: int,
         session_lock_acquire_timeout_seconds: float,
         driver_prefix: str,
+        diagnostics=None,
     ) -> None:
         self._base = base_url.rstrip("/")
         self._username = username
@@ -64,12 +66,14 @@ class UltraPandaClient:
         self._lock_ttl = session_lock_ttl_seconds
         self._lock_acquire = session_lock_acquire_timeout_seconds
         self._driver = driver_prefix
+        self._diag = diagnostics or NULL_RECORDER
 
     # ---- session ----
 
     async def get_or_login(self) -> str:
         cached = await self._store.get(self._game_id)
         if not _expired(cached):
+            self._diag.session_event("hit")
             return cached.token       # type: ignore[union-attr]
         try:
             async with self._store.login_lock(
@@ -78,10 +82,15 @@ class UltraPandaClient:
             ):
                 cached = await self._store.get(self._game_id)
                 if not _expired(cached):
+                    self._diag.session_event("hit")
                     return cached.token       # type: ignore[union-attr]
-                return await self._do_login()
+                token = await self._do_login()
+                self._diag.session_event("fresh")
+                return token
         except TimeoutError:
-            return await self._do_login()
+            token = await self._do_login()
+            self._diag.session_event("fresh")
+            return token
 
     async def _do_login(self) -> str:
         stime = int(time.time())
@@ -93,11 +102,12 @@ class UltraPandaClient:
         }
         body["sign"] = sign_body(body, stime)
         try:
-            resp = await self._http.post(
-                f"{self._base}/user/login",
-                content=json.dumps(body).encode(),
-                headers=_BASE_HEADERS,
-            )
+            async with self._diag.step("login.submit", phase="auth"):
+                resp = await self._http.post(
+                    f"{self._base}/user/login",
+                    content=json.dumps(body).encode(),
+                    headers=_BASE_HEADERS,
+                )
         except httpx.HTTPError as exc:
             raise TransientBackendError(
                 f"{self._driver}:login_transport:{type(exc).__name__}"
@@ -124,22 +134,28 @@ class UltraPandaClient:
             raise BackendError(f"{self._driver}:login_failed")
         slug, terminal = mapped
         if terminal:
-            raise BackendError(f"{self._driver}:{slug}")
-        raise TransientBackendError(f"{self._driver}:{slug}")
+            raise BackendError(f"{self._driver}:{slug}", provider_code=code)
+        raise TransientBackendError(f"{self._driver}:{slug}", provider_code=code)
 
     # ---- session-death-aware call ----
 
-    async def call(self, path: str, params: dict | None = None, *, op: str = "") -> dict:
+    async def call(
+        self, path: str, params: dict | None = None, *, op: str = "",
+        step: str = "primary", phase: str = "primary",
+    ) -> dict:
         """Signed POST with session-death detection. If the response is `code 1086`
         (Not logged in), clear the cached token, re-login, and retry the call once.
         """
         params = dict(params or {})
         token = await self.get_or_login()
-        body = await self._do_call(path, params, token=token)
-        if body.get("code") == 1086:
-            await self._store.clear(self._game_id)
-            token = await self.get_or_login()
+        async with self._diag.step(step, phase=phase):
             body = await self._do_call(path, params, token=token)
+        if body.get("code") == 1086:
+            async with self._diag.step("recovery.relogin", phase="recovery"):
+                await self._store.clear(self._game_id)
+                token = await self.get_or_login()
+                self._diag.session_event("relogin")
+                body = await self._do_call(path, params, token=token)
             if body.get("code") == 1086:
                 raise TransientBackendError(f"{self._driver}:session_dead_after_relogin")
         return body
@@ -148,12 +164,14 @@ class UltraPandaClient:
 
     async def call_throttled(
         self, path: str, params: dict | None = None, *, op: str = "",
+        step: str = "primary", phase: str = "primary",
     ) -> dict:
         """Like `.call()` but acquires `SET NX vpower_throttle:{game_id} ex={throttle_ttl}`
         before issuing the request. Used for /account/enterScore (recharge + redeem).
         """
-        await self._acquire_throttle()
-        body = await self.call(path, params, op=op)
+        async with self._diag.step("throttle.acquire", phase="preflight", http=False):
+            await self._acquire_throttle()
+        body = await self.call(path, params, op=op, step=step, phase=phase)
         if body.get("code") == 167:
             raise TransientBackendError(f"{self._driver}:rate_limited")
         return body
