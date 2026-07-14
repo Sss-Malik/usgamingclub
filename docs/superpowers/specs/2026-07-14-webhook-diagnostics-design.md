@@ -60,9 +60,15 @@ yolo/aspnet parse-then-discard the success `data`); (6) resolved `external_user_
    `false`.
 2. **Balances: honest-only, no extra provider calls.** Report `balance_before` only where a snapshot
    already exists (gameroom recharge/redeem); report `balance_after` wherever the response already
-   carries it — including by **retaining the yolo/aspnet money-op success `data`** we currently
-   discard. `null`/omit elsewhere. No read-after round trips (they would add load, risk the
+   carries it. `null`/omit elsewhere. No read-after round trips (they would add load, risk the
    goldentreasure/ultrapanda `code:167` rate limit, and change each money op's provider footprint).
+   > **Reconciled during implementation:** the design intended to also fill `balance_after` by
+   > retaining the yolo/aspnet money-op success `data`, but the code shows that data carries **no
+   > balance** — aspnet money-op success is a bare success *sentinel* (OrionStars even comments
+   > "player balance not in this response") and yolo's `post_form` success is a Dcat `{status,message}`
+   > envelope with no balance field. So `balance_after` is populated **only for gamevault and gameroom
+   > money ops** and is honestly absent (omitted) for yolo/aspnet/ultrapanda/goldentreasure. Read-op
+   > balances still flow via the existing `user_data.balance`, never duplicated into diagnostics.
 3. **Full per-HTTP-call steps, every backend.** Instrument all client families with named steps.
 4. **`external_user_id` whenever truthfully known** — from the create result, a cached
    `ctx.account.external_user_id`, or an id resolved mid-op. Always a real value we actually used;
@@ -90,9 +96,10 @@ yolo/aspnet parse-then-discard the success `data`); (6) resolved `external_user_
     "session_reuse": "hit",              // hit|fresh|relogin|null (null = no session concept)
     "duration_ms": 1840,
     "steps": [
-      {"name": "login.submit",  "phase": "auth",    "http": true, "ok": true,  "ms": 210, "skipped": false},
-      {"name": "recharge.post", "phase": "primary", "http": true, "ok": false, "ms": 800}
-    ],
+      {"name": "login.submit",  "phase": "auth",    "http": true, "ok": true, "ms": 210, "skipped": false},
+      {"name": "recharge.post", "phase": "primary", "http": true, "ok": true, "ms": 800}
+    ],  // a business rejection leaves ok:true (the provider answered) — see the ok note below;
+        // only a transport failure (connection/timeout) records ok:false
 
     // --- failure-only (all omitted on success) ---
     "failure_kind": "backend",           // preflight|backend|transient|invalid_result|unexpected|retry_blocked
@@ -112,11 +119,19 @@ yolo/aspnet parse-then-discard the success `data`); (6) resolved `external_user_
 ```
 
 **`steps[]` entry:** `name` (dotted), `phase` ∈ {`preflight`,`auth`,`resolve`,`snapshot`,`dialog`,
-`primary`,`recovery`,`finalize`}, `http` (bool), `ok` (bool), `ms` (int). Optional `skipped` (bool —
+`primary`,`recovery`,`finalize`} (closed set — every backend must map its steps onto these; do not
+emit an out-of-set phase), `http` (bool), `ok` (bool), `ms` (int). Optional `skipped` (bool —
 a conditional step the code path didn't take, e.g. `login.submit` on a session cache hit, recorded
 `ms:0`) and `external` (bool — the aspnet captcha solver, which is a third party, not the game
-provider). The presence of a non-skipped `login.submit` is itself corroboration of
-`session_reuse:"fresh"`.
+provider).
+
+**`ok` semantics (uniform across all backends):** `ok` reflects the step's own HTTP round-trip at the
+**transport** level. A connection error / timeout / raised transport error inside the step records
+`ok:false`. A provider that *answered* but rejected the operation — a business error, or an HTTP
+4xx/5xx / envelope error classified after the request returned — leaves the step `ok:true`; that
+failure is conveyed by `failure_kind` + `provider` + `reason`, not by `ok`. (This is why every
+backend wraps only the transport call in its step and classifies the response afterward.) The
+presence of a non-skipped `login.submit` is itself corroboration of `session_reuse:"fresh"`.
 
 **`failure_kind` taxonomy** (set by *which* executor branch fired):
 
@@ -184,8 +199,9 @@ getters. Concrete step names:
 - **ultrapanda:** `throttle.acquire` (mutating) → `login.submit` (conditional) → `primary` →
   `recovery.relogin` (on `1086`).
 - **yolo:** `login.page` + `login.submit` + `login.confirm` (conditional) → `resolve.search`
-  (player_list) → `primary` → `recovery` (on auth-failure). **Retain the money-op success `data`**
-  to populate `balance_after` when present (do **not** retain any password field).
+  (player_list) → `primary` → `recovery` (on auth-failure). (The money-op success `data` was found
+  to carry no balance — see the reconciliation note under decision 2 — so **no `balance_after`** is
+  marked; still never retain any password field.)
 
 ### 5.4 `app/backends/context.py`
 `BackendContext` gains `diagnostics: DiagnosticsRecorder | None = None`, `op_id: str | None = None`,
@@ -251,8 +267,9 @@ carry no credentials.
   cache-hit and `op_id` present/absent; `reason` never equals the generic sentence on failure while
   `message` still does for `error`.
 - **Backend/client:** each client emits the expected step names/phases and skip markers; session
-  getters emit the right `session_event`; gameroom `balance_before` from snapshot; yolo/aspnet
-  `balance_after` retention.
+  getters emit the right `session_event`; gameroom `balance_before` from snapshot; gamevault/gameroom
+  `balance_after` from the money-op response; yolo/aspnet/ultrapanda/goldentreasure carry no
+  `balance_after` (assert it stays absent).
 - **Executor:** `failure_kind` per branch; `duration_ms` measured; cache-replay produces
   `cache_hit:true, steps:[]` + cached detail; `attempt` from `job_try`.
 - **Integration:** endpoints accept + echo `op_id`; a full loop asserts the `diagnostics` block on a
