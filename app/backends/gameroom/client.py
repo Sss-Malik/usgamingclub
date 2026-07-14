@@ -43,12 +43,16 @@ class GameroomClient:
         """
         cached = await self._session.get(self._game_id)
         if cached and cached.token != invalidate and not _expired(cached):
+            self._diag.session_event("relogin" if invalidate else "hit")
             return cached.token
         async with self._session.login_lock(self._game_id, ttl_seconds=10, acquire_timeout=10.0):
             cached = await self._session.get(self._game_id)
             if cached and cached.token != invalidate and not _expired(cached):
+                self._diag.session_event("relogin" if invalidate else "hit")
                 return cached.token
-            token, expires_at = await self._do_login()
+            async with self._diag.step("login.submit", phase="auth"):
+                token, expires_at = await self._do_login()
+            self._diag.session_event("relogin" if invalidate else "fresh")
             ttl = max(60, expires_at - int(time.time()) - 60)
             await self._session.set(self._game_id, CachedSession(token=token, expires_at=expires_at), ttl_seconds=ttl)
             return token
@@ -76,35 +80,44 @@ class GameroomClient:
             if not isinstance(token, str) or not token or not isinstance(exp, int):
                 raise TransientBackendError("gameroom:login_missing_token")
             return token, exp
-        reason, terminal = map_response(int(sc) if isinstance(sc, int) else 0, str(body_json.get("message", "")))
+        # Login errors don't carry provider fields (not in the pinned attach-site list); only
+        # slug/terminal are used here, so the envelope status/raw message are intentionally dropped.
+        slug, terminal, _status, _msg = map_response(
+            int(sc) if isinstance(sc, int) else 0, str(body_json.get("message", "")))
         if not terminal:
-            raise TransientBackendError(reason)
-        raise BackendError(reason)
+            raise TransientBackendError(slug)
+        raise BackendError(slug)
 
     # ---- request ----
 
     async def call(self, method: str, path: str, *,
                    fields: dict[str, str | int] | None = None,
-                   params: dict[str, str | int] | None = None) -> dict:
+                   params: dict[str, str | int] | None = None,
+                   step: str = "primary", phase: str = "primary") -> dict:
         """Issue one request, transparently re-login + retry once on status_code:410."""
         token = await self.get_token()
-        resp = await self._http_request(method, path, token, fields=fields, params=params)
+        async with self._diag.step(step, phase=phase):
+            resp = await self._http_request(method, path, token, fields=fields, params=params)
         if self._is_410(resp):
-            fresh = await self.get_token(invalidate=token)
-            resp = await self._http_request(method, path, fresh, fields=fields, params=params)
+            async with self._diag.step("recovery.relogin", phase="recovery"):
+                fresh = await self.get_token(invalidate=token)
+                resp = await self._http_request(method, path, fresh, fields=fields, params=params)
             if self._is_410(resp):
                 raise BackendError("gameroom:auth_failed")
         return self._classify(resp)
 
     async def call_raw(self, method: str, path: str, *,
                        fields: dict[str, str | int] | None = None,
-                       params: dict[str, str | int] | None = None) -> dict:
+                       params: dict[str, str | int] | None = None,
+                       step: str = "primary", phase: str = "primary") -> dict:
         """Like .call() but returns the full envelope (use when `data` is a list, e.g. userList)."""
         token = await self.get_token()
-        resp = await self._http_request(method, path, token, fields=fields, params=params)
+        async with self._diag.step(step, phase=phase):
+            resp = await self._http_request(method, path, token, fields=fields, params=params)
         if self._is_410(resp):
-            fresh = await self.get_token(invalidate=token)
-            resp = await self._http_request(method, path, fresh, fields=fields, params=params)
+            async with self._diag.step("recovery.relogin", phase="recovery"):
+                fresh = await self.get_token(invalidate=token)
+                resp = await self._http_request(method, path, fresh, fields=fields, params=params)
             if self._is_410(resp):
                 raise BackendError("gameroom:auth_failed")
         # Same HTTP + envelope error classification as call(); only difference is we return the
@@ -113,10 +126,13 @@ class GameroomClient:
         sc = body.get("status_code")
         if sc == 200:
             return body
-        reason, terminal = map_response(int(sc) if isinstance(sc, int) else 0, str(body.get("message", "")))
+        slug, terminal, status, msg = map_response(int(sc) if isinstance(sc, int) else 0,
+                                                   str(body.get("message", "")))
         if not terminal:
-            raise TransientBackendError(reason)
-        raise BackendError(reason)
+            raise TransientBackendError(slug, provider_http_status=resp.status_code,
+                                        provider_code=status, provider_message=msg)
+        raise BackendError(slug, provider_http_status=resp.status_code,
+                           provider_code=status, provider_message=msg)
 
     async def _http_request(self, method: str, path: str, token: str, *,
                             fields=None, params=None) -> httpx.Response:
@@ -138,13 +154,16 @@ class GameroomClient:
     def _parse_or_raise(self, resp: httpx.Response) -> dict:
         """HTTP-status check + JSON parse; raise Transient/BackendError on the wrong shapes."""
         if resp.status_code >= 500:
-            raise TransientBackendError(f"gameroom:http_{resp.status_code}")
+            raise TransientBackendError(f"gameroom:http_{resp.status_code}",
+                                        provider_http_status=resp.status_code)
         if resp.status_code >= 300:
-            raise BackendError(f"gameroom:http_{resp.status_code}")
+            raise BackendError(f"gameroom:http_{resp.status_code}",
+                               provider_http_status=resp.status_code)
         try:
             return resp.json()
         except ValueError as exc:
-            raise TransientBackendError("gameroom:bad_response") from exc
+            raise TransientBackendError("gameroom:bad_response",
+                                        provider_http_status=resp.status_code) from exc
 
     def _classify(self, resp: httpx.Response) -> dict:
         body = self._parse_or_raise(resp)
@@ -157,10 +176,13 @@ class GameroomClient:
             if isinstance(data, dict):
                 return data
             return {k: v for k, v in body.items() if k not in {"status_code", "message", "code", "data"}}
-        reason, terminal = map_response(int(sc) if isinstance(sc, int) else 0, str(body.get("message", "")))
+        slug, terminal, status, msg = map_response(int(sc) if isinstance(sc, int) else 0,
+                                                   str(body.get("message", "")))
         if not terminal:
-            raise TransientBackendError(reason)
-        raise BackendError(reason)
+            raise TransientBackendError(slug, provider_http_status=resp.status_code,
+                                        provider_code=status, provider_message=msg)
+        raise BackendError(slug, provider_http_status=resp.status_code,
+                           provider_code=status, provider_message=msg)
 
     @staticmethod
     def _is_410(resp: httpx.Response) -> bool:
