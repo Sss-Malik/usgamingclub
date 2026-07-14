@@ -1221,6 +1221,10 @@ git commit -m "feat(diagnostics): assemble + deliver diagnostics from the execut
 
 ---
 
+> **Tasks 11–17:** consult **Appendix A** (end of this document) for the authoritative,
+> source-pinned step names → exact client call, provider-attach sites, `mark_*` response keys,
+> and `session_event` points for each backend. Where a task body below differs, **Appendix A wins**.
+
 ## Task 11: mock backend — single build step
 
 **Files:**
@@ -1404,7 +1408,7 @@ In `app/backends/gamevault/backend.py`, pass step names and mark ids. Example (`
         return RechargeResult(balance=balance)
 ```
 
-Apply the analogous `step=`/`phase=` and `mark_external_user_id`/`mark_balance_after` to `create_account` (`step="addUser.post"`, mark the returned `user_id`), `read_balance` (`step="balance.read"`, `mark_balance_after`), `reset_password` (`step="reset.post"`), and `redeem` (`step="withdraw.post"`, `mark_balance_after`).
+Apply the analogous `step=`/`phase=` and marks to `create_account` (`step="addUser.post"`, `mark_external_user_id(str(data["user_id"]))`), `read_balance` (`step="balance.read"` — **no balance mark**; the balance already flows via `user_data.balance`), `reset_password` (`step="reset.post"`), and `redeem` (`step="withdraw.post"`, `mark_balance_after(data.get("user_balance"))` when not None).
 
 - [ ] **Step 6: Client + backend tests**
 
@@ -1664,7 +1668,7 @@ def map_response(code: int, message: str) -> tuple[str, bool, int, str]:
 
 In `app/backends/goldentreasure/client.py`: at every `map_response(...)` raise site, unpack the 4-tuple and pass `provider_code=code, provider_message=msg` (and `provider_http_status=200` for body-carried business errors, or the real status for transport errors). Wrap `throttle.acquire` (the `SET NX` gate), `login.submit` (inside the login lock), the primary op, and `recovery.relogin` in `self._diag.step(...)`. Emit `session_event` from `get_session` (`hit`/`fresh`/`relogin`). On the auth-dead retry path where the reason collapses to `auth_failed`, pass `provider_code=<origin code>` and `provider_message=<origin message>` from the first failing response so the origin is preserved.
 
-In `app/backends/goldentreasure/backend.py`: name each client call per the catalog (`create.post`/`savePlayer.post`, `getPlayerScore.post`/`balance.read`, `updatePlayer.post`/`password.update`, `enterScore.post` for recharge/redeem); on `read_balance`, `ctx.diag.mark_balance_after(<curScore>)`. Do not attempt `external_user_id` (savePlayer returns none) or `balance_before`.
+In `app/backends/goldentreasure/backend.py`: pass `step=` to each `call(...)` — `create.post` (savePlayer), `balance.read` (getPlayerScore), `reset.post` (updatePlayer), `recharge.post`/`redeem.post` (enterScore). **No `mark_*` calls** — savePlayer returns no uid (`external_user_id` stays null), enterScore returns no balance, and the read balance already flows via `user_data`. See Appendix A for the throttle/login/recovery wrap points and the origin-code preservation on `gtreasure:auth_failed`.
 
 - [ ] **Step 5: Tests** (client attaches provider code on business error; throttle+login steps recorded; read marks balance_after) — mirror the Task-13 test shapes against the file's existing harness.
 
@@ -1775,19 +1779,28 @@ Expected: FAIL — `provider_code is None`.
 
 - [ ] **Step 3: Implement**
 
-At each `map_code(...)` raise site in `app/backends/ultrapanda/client.py`, pass `provider_code=code` (the numeric `body['code']` already in scope) and `provider_http_status=<resp status>`:
+Provider fields attach in **two** places (business codes are raised by the *backend*, not the client):
+
+1. `app/backends/ultrapanda/backend.py` `_raise_for_code(body, *, op, driver)` — the business path (HTTP was <400, so 200):
 
 ```python
-        result = map_code(code, op=op)
-        if result is not None:
-            slug, terminal = result
-            kwargs = {"provider_http_status": resp.status_code, "provider_code": code}
-            if terminal:
-                raise BackendError(f"{self._driver}:{slug}", **kwargs)
-            raise TransientBackendError(f"{self._driver}:{slug}", **kwargs)
+def _raise_for_code(body: dict, *, op: str, driver: str) -> None:
+    code = body.get("code")
+    if code == 20000:
+        return
+    mapped = map_code(int(code) if isinstance(code, int) else 0, op=op)
+    if mapped is None:
+        raise TransientBackendError(f"{driver}:malformed_response")
+    slug, terminal = mapped
+    kwargs = {"provider_http_status": 200, "provider_code": code}
+    if terminal:
+        raise BackendError(f"{driver}:{slug}", **kwargs)
+    raise TransientBackendError(f"{driver}:{slug}", **kwargs)
 ```
 
-Wrap `throttle.acquire`, `login.submit` (inside the login path), primary op, and `recovery.relogin` (the `1086` re-login path) in `self._diag.step(...)`; emit `session_event` from `get_session`. In `backend.py`, `ctx.diag.mark_balance_after(<player score>)` on `read_balance`.
+2. `app/backends/ultrapanda/client.py` `_do_login` — the login-time `map_code` raise: pass `provider_code=code`.
+
+There is **no** `provider_message` (the vpower API returns none). Wrap `throttle.acquire` (in `call_throttled`), `login.submit` (in `_do_login`), the `<op>.post` (in `call`, via a `step=` arg), and `recovery.relogin` (the `1086` retry in `call`) in `self._diag.step(...)`; emit `session_event` from `get_or_login` and set `relogin` in the `1086` recovery branch. **No `mark_*`** — read balance flows via `user_data`; money ops return no balance; no provider uid exists.
 
 - [ ] **Step 4: Tests** — provider_code present, message absent; throttle+login steps recorded; read marks balance_after.
 
@@ -1874,7 +1887,7 @@ def map_envelope(http_status: int, body: dict | None) -> dict:
 
 - [ ] **Step 4: Update client + backend**
 
-In `app/backends/yolo/client.py`: wrap the three login round trips as `login.page`/`login.submit`/`login.confirm`, the search as `resolve.search`, the primary op with its catalog name, and the auth-failure retry as `recovery`; emit `session_event` from `get_session`. In `backend.py`: for `recharge`/`redeem`, **keep the success `data` dict** returned by `map_envelope` (do not drop it) and `ctx.diag.mark_balance_after(<balance key>)` when present; `mark_external_user_id(<resolved id>)`. Never retain a password field from `data`.
+In `app/backends/yolo/client.py`: wrap the three `_do_login` round trips as `login.page`/`login.submit`/`login.confirm`, wrap the primary/search request in `post_form`/`get_text` (backend passes `step=`), and the auth-failure retry as `recovery` (set `session_event("relogin")` there); emit `session_event` from `get_session`. In `backend.py`: `mark_external_user_id(uid)` from `_player_id`/`_search`/create's resolved `uid` (grid column 0). **No `balance_after` mark** — see the flag in Appendix A: yolo's `post_form` success envelope is a Dcat `{status,message}` dict with no balance field, so there is nothing to retain (read balance still flows via `user_data`). Never retain any password field from a `data` dict.
 
 - [ ] **Step 5: Tests** — provider http+message present, code None; login steps recorded; recharge marks balance_after when the success data carries a balance.
 
@@ -1935,4 +1948,62 @@ git commit -m "docs(diagnostics): operator reference + Arcadia contract diff han
 - **Deploy-order independence:** every schema/context/client/executor param is keyword-defaulted; `build_webhook_payload(diagnostics=None)` reproduces the legacy body; provider fields absent until a backend task lands → provider block simply omitted.
 - **Type consistency:** `map_code`/`map_response` return-tuple arities are defined per backend in their task's Interfaces block (gamevault 3-tuple; gameroom/goldentreasure 4-tuple; ultrapanda unchanged 2-tuple; yolo raises directly). `snapshot()` keys are fixed in Task 2 and consumed unchanged in Tasks 7 and 10.
 - **Money safety:** no new provider calls anywhere; only `succeeded`/`failed` cache writes (with `detail`); transient `error` still never cached.
+
+---
+
+## Appendix A — Pinned instrumentation reference (authoritative)
+
+Source-verified against the backend/client method bodies. Legend: **(S)** step name → the exact
+method/HTTP call it wraps; **(P)** where `provider_*` are attached; **(M)** `mark_*` with exact
+response keys; **(SE)** `session_event` points. Where a task body differs, **this appendix wins**.
+
+Global: `read` ops never mark `balance_after` (the balance already flows via `user_data.balance`);
+`primary` HTTP steps carry `http=True`; `throttle.acquire` and `login.captcha_solve` carry
+`http=False`.
+
+### mock (Task 11)
+- **(S)** `{op}.build` (`phase=finalize`, `http=False`) wraps the whole method body.
+- **(P)** none (synthetic reason). **(M)** none. **(SE)** none — `session_reuse` stays `null`.
+
+### gamevault (Task 12) — `app/backends/gamevault/`
+- **(S)** `resolve.user_id` → `call("/api/external/getUserID", …)` in `_user_id` (skipped when `external_user_id` cached); `addUser.post` / `balance.read` / `reset.post` / `recharge.post` / `withdraw.post` → the respective `call(...)`.
+- **(P)** in client `call`: `provider_http_status=resp.status_code`; on `code!=0`, `provider_code`+`provider_message` from `map_code` (3-tuple `(slug, code, msg)`).
+- **(M)** `mark_external_user_id`: create → `str(data["user_id"])`; `_user_id` → cached `ctx.account.external_user_id` or resolved `str(data["user_id"])`. `mark_balance_after`: recharge/redeem → `data.get("user_balance")` when not None.
+- **(SE)** none — stateless MD5; `session_reuse` stays `null`.
+
+### gameroom (Task 13) — `app/backends/gameroom/`
+- **(S)** `resolve.user_id` → `call_raw("GET","/api/player/userList",…)` in `_player_id`; `recharge.snapshot`/`redeem.snapshot` (`phase=snapshot`) → `call("GET","/api/player/agentMoney",…)` in `_agent_money` (add a `step` arg); `recharge.post`→`agentRecharge`, `redeem.post`→`agentWithdraw`, `create.post`→`playerInsert`, `reset.post`→`/api/player/reset`, `balance.read`→`call("GET","/api/player/agentMoney",…)` in `read_balance`.
+- **(P)** in `_classify` / `_parse_or_raise` / `call_raw`: `provider_http_status=resp.status_code`; on envelope error `provider_code=<envelope status_code>`, `provider_message=<raw message>` (via `map_response` 4-tuple `(slug, terminal, status, msg)`).
+- **(M)** `mark_balance_before`: recharge **and** redeem → `float(snapshot["balance"])` (player balance from `_agent_money`, whose dict is `{"username","balance","cusBlance"}`). `mark_balance_after`: recharge → `data.get("total_balance")`. `mark_external_user_id`: create → `str(data["id"])`; `_player_id` → cached value or `str(row["id"] or row["Id"])`.
+- **(SE)** `get_token`: cache hit → `hit`; after `_do_login` → `fresh`; the 410-recovery `get_token(invalidate=…)` → `relogin`.
+
+### goldentreasure (Task 14) — `app/backends/goldentreasure/`
+- **(S)** `throttle.acquire` (`phase=preflight`, `http=False`) → `_acquire_throttle()` in `call` when `throttle=True`; `login.submit` → `_do_login` (wrap in `get_token`); `create.post`(savePlayer) / `balance.read`(getPlayerScore) / `reset.post`(updatePlayer) / `recharge.post`+`redeem.post`(enterScore) → the authed `_post_raw` in `call` (add a `step` arg); `recovery.relogin` → the `{-3,-17,52}` retry block in `call`.
+- **(P)** business error (`map_response` 4-tuple, HTTP 200) → `provider_http_status=200`, `provider_code=code`, `provider_message=msg` in `call` and `_do_login`; transport `gtreasure:http_{status}` in `_post_raw` → `provider_http_status=resp.status_code`. On the `gtreasure:auth_failed` raise, pass `provider_code`/`provider_message` from the **first (origin)** response (capture its `code`/`message` before the retry).
+- **(M)** none. **(SE)** `get_token`: hit / fresh / relogin (as gameroom).
+
+### aspnet — orionstars + milkyway (Task 15) — `app/backends/_aspnet_cashier/`, `orionstars/`, `milkyway/`
+- **(S)** named **inside the client helpers**: `resolve.accounts_list_get`→`fetch_accounts_list_html`; `resolve.search_post`→the POST in `search_account`/`milkyway_read_balance`; `dialog.tourl_post`→`get_dialog_url`; `dialog.get`+`dialog.post`→`submit_dialog`; `balance.getscore_post`→`post_getscoreuserid`. `create.get`+`create.post` are named by the backend via `request_text(step=…)`. `recovery` wraps the dead-session retry inside `request_text`. Login sub-steps in `login.py`: `login.page`→r1 GET, `login.captcha_img`→r2 GET, `login.captcha_solve`→`solve_numeric_image` (`http=False`, **`external=True`**), `login.submit`→r3 POST.
+- **(P)** `business_failure_to_error(message)` → `provider_message=message` (untruncated), `provider_code=None`; `classify` unknown-sentinel → `provider_message=html`; login terminal in `login.py` → `provider_code=errtype`.
+- **(M)** `mark_external_user_id`: create → `f"{uid}:{gid}"` from the follow-up `search_account`; `_player_ids` → cached split or `f"{pairs[0][0]}:{pairs[0][1]}"`. No balance marks (money-op success is a bare sentinel — OrionStars `recharge` comments "player balance not in this response").
+- **(SE)** `get_or_login`: hit / fresh; dead-session retry in `request_text` → `relogin`. Add a `diag=NULL_RECORDER` param to `login()` and pass `self._diag` from `_do_login`.
+
+### ultrapanda / vblink (Task 16) — `app/backends/ultrapanda/`
+- **(S)** `throttle.acquire` (`http=False`) → `_acquire_throttle()` in `call_throttled`; `login.submit` → the `/user/login` POST in `_do_login`; `<op>.post` → `_do_call` in `call` (add a `step` arg); `recovery.relogin` → the `1086` retry in `call`.
+- **(P)** in **backend `_raise_for_code`** → `provider_http_status=200`, `provider_code=code`; in client `_do_login` map_code raise → `provider_code=code`. No `provider_message` (none exists).
+- **(M)** none. **(SE)** `get_or_login`: hit / fresh; set `relogin` explicitly in the `1086` recovery branch of `call`.
+
+### yolo (Task 17) — `app/backends/yolo/`
+- **(S)** login sub-steps in `_do_login`: `login.page`→r1 `_get`, `login.submit`→r2 `_post`, `login.confirm`→r3 `_get(/admin/player_list)`; `resolve.search`→`get_text(_PLAYER_LIST,…)` in `_search`; `<op>.post`→`post_form` (backend passes `step`); `balance.read`→the read-path `get_text` search; `recovery` wraps the auth-fail retry in `post_form`/`get_text`.
+- **(P)** `map_envelope` → `provider_http_status=http_status`, `provider_message=<raw msg>`, `provider_code=None`.
+- **(M)** `mark_external_user_id`: resolved `uid` = grid column 0 (`parse_player_row` first element) from `_player_id`/`_search`/create's follow-up search.
+- **(SE)** `get_session`: hit / fresh; the auth-fail `get_session(invalidate=…)` → `relogin`.
+
+**Flag — yolo/aspnet `balance_after` (narrows decision 2).** Decision 2 included "stop discarding
+yolo/aspnet success data to fill `balance_after`," premised on that data carrying a post-balance. The
+source shows it does **not**: aspnet money-op success is a bare success sentinel (OrionStars comments
+"player balance not in this response"), and yolo's `post_form` success envelope is a Dcat
+`{status,message}` dict with no balance key. So `balance_after` is honestly **null** for yolo/aspnet
+money ops — read balances still flow via `user_data`. This preserves the "honest-only" primary
+decision; it only removes a bonus sub-clause whose premise didn't hold.
 ```
