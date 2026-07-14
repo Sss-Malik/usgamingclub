@@ -8,6 +8,7 @@ import pytest
 import respx
 
 from app.backends.base import BackendError, TransientBackendError
+from app.backends.diagnostics import DiagnosticsRecorder
 from app.backends.goldentreasure.client import GoldenTreasureClient
 from app.backends.goldentreasure.crypto import xtoken_header
 from app.backends.goldentreasure.session import CachedSession, InMemorySessionStore
@@ -15,13 +16,14 @@ from app.backends.goldentreasure.session import CachedSession, InMemorySessionSt
 BASE = "https://gt.test"
 
 
-def _make_client(http, *, store=None, fake_redis=None):
+def _make_client(http, *, store=None, fake_redis=None, diagnostics=None):
     return GoldenTreasureClient(
         base_url=BASE, username="Test02Gd1WEB", password="Zaeem@1233",
         http_client=http,
         session_store=store or InMemorySessionStore(),
         redis=fake_redis,
         game_id=13,
+        diagnostics=diagnostics,
     )
 
 
@@ -269,3 +271,148 @@ async def test_throttle_serializes_concurrent_mutating_ops(fake_redis, monkeypat
         await client.call("/api/account/enterScore", {"score": "1"}, throttle=True)
 
     assert sleeps, "_acquire_throttle should have polled at least once"
+
+
+# --- diagnostics: session events ---
+
+@respx.mock
+async def test_get_token_cache_hit_emits_session_hit():
+    route = respx.post(f"{BASE}/api/user/login").mock(return_value=httpx.Response(200, json=_login_ok("would_be_new")))
+    store = InMemorySessionStore()
+    await store.set(13, CachedSession(token="cached", expires_at=int(time.time()) + 3600), ttl_seconds=3600)
+    rec = DiagnosticsRecorder()
+    async with httpx.AsyncClient() as http:
+        token = await _make_client(http, store=store, diagnostics=rec).get_token()
+    assert token == "cached"
+    assert route.call_count == 0
+    assert rec.snapshot()["session_reuse"] == "hit"
+
+
+@respx.mock
+async def test_get_token_fresh_login_emits_session_fresh_and_login_submit_step():
+    respx.post(f"{BASE}/api/user/login").mock(return_value=httpx.Response(200, json=_login_ok("Tnew")))
+    rec = DiagnosticsRecorder()
+    async with httpx.AsyncClient() as http:
+        token = await _make_client(http, diagnostics=rec).get_token()
+    assert token == "Tnew"
+    snap = rec.snapshot()
+    assert snap["session_reuse"] == "fresh"
+    steps = {s["name"]: s for s in snap["steps"]}
+    assert "login.submit" in steps
+    assert steps["login.submit"]["phase"] == "auth"
+    assert steps["login.submit"]["ok"] is True
+
+
+@respx.mock
+async def test_get_token_with_invalidate_emits_session_relogin():
+    respx.post(f"{BASE}/api/user/login").mock(return_value=httpx.Response(200, json=_login_ok("Tnew")))
+    store = InMemorySessionStore()
+    await store.set(13, CachedSession(token="Tdead", expires_at=int(time.time()) + 3600), ttl_seconds=3600)
+    rec = DiagnosticsRecorder()
+    async with httpx.AsyncClient() as http:
+        token = await _make_client(http, store=store, diagnostics=rec).get_token(invalidate="Tdead")
+    assert token == "Tnew"
+    assert rec.snapshot()["session_reuse"] == "relogin"
+
+
+# --- diagnostics: throttle + primary + recovery steps ---
+
+@respx.mock
+async def test_call_records_throttle_acquire_step_as_non_http(fake_redis):
+    respx.post(f"{BASE}/api/user/login").mock(return_value=httpx.Response(200, json=_login_ok("T")))
+    respx.post(f"{BASE}/api/account/enterScore").mock(return_value=httpx.Response(
+        200, json={"code": 20000, "message": "ok"}))
+    rec = DiagnosticsRecorder()
+    async with httpx.AsyncClient() as http:
+        client = _make_client(http, fake_redis=fake_redis, diagnostics=rec)
+        await client.call("/api/account/enterScore", {"score": "1"}, throttle=True)
+    steps = {s["name"]: s for s in rec.snapshot()["steps"]}
+    assert "throttle.acquire" in steps
+    assert steps["throttle.acquire"]["phase"] == "preflight"
+    assert steps["throttle.acquire"]["http"] is False
+
+
+@respx.mock
+async def test_call_records_the_given_step_name():
+    respx.post(f"{BASE}/api/user/login").mock(return_value=httpx.Response(200, json=_login_ok("T")))
+    respx.post(f"{BASE}/api/user/CurScore").mock(return_value=httpx.Response(
+        200, json={"code": 20000, "LimitNum": "5.00"}))
+    rec = DiagnosticsRecorder()
+    async with httpx.AsyncClient() as http:
+        await _make_client(http, diagnostics=rec).call(
+            "/api/user/CurScore", {}, step="agent_balance.read", phase="primary")
+    steps = {s["name"]: s for s in rec.snapshot()["steps"]}
+    assert "agent_balance.read" in steps
+    assert steps["agent_balance.read"]["phase"] == "primary"
+    assert steps["agent_balance.read"]["http"] is True
+
+
+@respx.mock
+async def test_call_auth_dead_relogin_emits_session_relogin_and_recovery_step():
+    respx.post(f"{BASE}/api/user/login").mock(side_effect=[
+        httpx.Response(200, json=_login_ok("Told")),
+        httpx.Response(200, json=_login_ok("Tnew")),
+    ])
+    respx.post(f"{BASE}/api/user/CurScore").mock(side_effect=[
+        httpx.Response(200, json={"code": -3, "message": "token invalid"}),
+        httpx.Response(200, json={"code": 20000, "LimitNum": "5.00"}),
+    ])
+    rec = DiagnosticsRecorder()
+    async with httpx.AsyncClient() as http:
+        data = await _make_client(http, diagnostics=rec).call(
+            "/api/user/CurScore", {}, step="balance.read")
+    assert data["LimitNum"] == "5.00"
+    snap = rec.snapshot()
+    assert snap["session_reuse"] == "relogin"
+    names = [s["name"] for s in snap["steps"]]
+    assert "recovery.relogin" in names
+    assert "balance.read" in names
+
+
+# --- diagnostics: provider fields ---
+
+@respx.mock
+async def test_business_error_carries_envelope_code_and_untruncated_message():
+    respx.post(f"{BASE}/api/user/login").mock(return_value=httpx.Response(200, json=_login_ok("T")))
+    long_msg = "z" * 200                                            # forces slug truncation to 80 chars
+    respx.post(f"{BASE}/api/account/enterScore").mock(return_value=httpx.Response(
+        200, json={"code": 9999, "message": long_msg}))
+    async with httpx.AsyncClient() as http:
+        with pytest.raises(BackendError) as ei:
+            await _make_client(http).call("/api/account/enterScore", {"score": "1"})
+    assert ei.value.provider_http_status == 200                     # envelope is HTTP 200
+    assert ei.value.provider_code == 9999
+    assert ei.value.provider_message == long_msg                    # untruncated, unlike the reason slug
+    assert len(ei.value.reason) < len(long_msg)
+
+
+@respx.mock
+async def test_http_5xx_transport_error_carries_provider_http_status():
+    respx.post(f"{BASE}/api/user/login").mock(return_value=httpx.Response(200, json=_login_ok("T")))
+    respx.post(f"{BASE}/api/user/CurScore").mock(return_value=httpx.Response(503))
+    async with httpx.AsyncClient() as http:
+        with pytest.raises(TransientBackendError) as ei:
+            await _make_client(http).call("/api/user/CurScore", {})
+    assert ei.value.provider_http_status == 503
+
+
+# --- diagnostics: origin-code preservation on auth_failed ---
+
+@respx.mock
+async def test_auth_dead_twice_preserves_origin_code_and_message_on_auth_failed():
+    # First failure is -3 (token invalid); after the relogin+retry the SAME game session is
+    # still dead (second response is -17, a different auth-dead code, simulating a backend
+    # that reports token_expired on the retry). The raised auth_failed must report the FIRST
+    # (origin) code/message, not the second one.
+    respx.post(f"{BASE}/api/user/login").mock(return_value=httpx.Response(200, json=_login_ok("T")))
+    respx.post(f"{BASE}/api/user/CurScore").mock(side_effect=[
+        httpx.Response(200, json={"code": -3, "message": "origin: token invalid"}),
+        httpx.Response(200, json={"code": -17, "message": "retry: token expired"}),
+    ])
+    async with httpx.AsyncClient() as http:
+        with pytest.raises(BackendError) as ei:
+            await _make_client(http).call("/api/user/CurScore", {})
+    assert ei.value.reason == "gtreasure:auth_failed"
+    assert ei.value.provider_http_status == 200
+    assert ei.value.provider_code == -3
+    assert ei.value.provider_message == "origin: token invalid"

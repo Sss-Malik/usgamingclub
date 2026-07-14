@@ -36,6 +36,7 @@ class GoldenTreasureBackend:
         username = _require_username(ctx)
         data = await self._client.call(
             "/api/account/getPlayerScore", {"account": username},
+            step="balance.read",
         )
         return ReadBalanceResult(balance=_balance(data.get("curScore", 0)))
 
@@ -54,6 +55,7 @@ class GoldenTreasureBackend:
                 "name": "", "phone": "", "tel_area_code": "", "remark": "",
             },
             throttle=True,
+            step="create.post",
         )
         # savePlayer doesn't return a uid (spec GT4) -> external_user_id=None.
         return CreateAccountResult(
@@ -73,6 +75,7 @@ class GoldenTreasureBackend:
                 "name": "", "phone": "", "remark": "", "tel_area_code": "",
             },
             # NOT throttled (spec GT7).
+            step="reset.post",
         )
         return ResetPasswordResult(password=pwd)
 
@@ -89,6 +92,7 @@ class GoldenTreasureBackend:
                 "user_type": "player",
             },
             throttle=True,
+            step="recharge.post",
         )
         # enterScore success has no balance; we omit it (contract makes it optional).
         return RechargeResult()
@@ -106,6 +110,7 @@ class GoldenTreasureBackend:
                 "user_type": "player",
             },
             throttle=True,
+            step="redeem.post",
         )
         return RedeemResult()
 

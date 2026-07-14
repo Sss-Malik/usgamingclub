@@ -16,10 +16,18 @@ GTREASURE_STATUS: dict[int, str] = {
 TRANSIENT_CODES: frozenset[int] = frozenset({167})
 
 
-def map_response(code: int, message: str) -> tuple[str, bool]:
-    """Return (reason_slug, is_terminal). Cache only terminal failures."""
+def map_response(code: int, message: str) -> tuple[str, bool, int, str]:
+    """Map a Golden Treasure envelope (code + message) to (slug, terminal, code, raw_message).
+
+    Terminal = same call would fail the same way; the executor caches these so a re-run
+    short-circuits. Transient = retry-worthy (currently only 167, rate limited).
+    `code` and `raw_message` are the untruncated provider code + message, carried for the
+    webhook `diagnostics.provider` channel (never used for the player-facing slug, which may
+    itself be truncated for unrecognized business errors).
+    """
+    raw = message or ""
     if code in TRANSIENT_CODES:
-        return (f"gtreasure:{GTREASURE_STATUS[code]}", False)
+        return (f"gtreasure:{GTREASURE_STATUS[code]}", False, code, raw)
     if code in GTREASURE_STATUS:
-        return (f"gtreasure:{GTREASURE_STATUS[code]}", True)
-    return (f"gtreasure:code_{code}: {(message or '')[:80]}", True)
+        return (f"gtreasure:{GTREASURE_STATUS[code]}", True, code, raw)
+    return (f"gtreasure:code_{code}: {raw[:80]}", True, code, raw)
