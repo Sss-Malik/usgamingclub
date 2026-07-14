@@ -70,3 +70,35 @@ Retries on conn-error/5xx/404 with backoff up to `WEBHOOK_MAX_BUDGET_SECONDS` (d
   `gtreasure:requires_operator_action_*` (2FA / verify code — clear via agent UI).
 - The agent account must **not have 2FA enabled** — Google Authenticator (`code:30200`/`30201`) and
   system verify codes (`code:30100`) require operator interaction; our automation can't satisfy them.
+
+## Webhook diagnostics — operator field reference
+Every webhook (success or failure) may carry `op_id` (top-level) and a `diagnostics` object — see
+`docs/architecture.md` ("Webhook diagnostics") for the shape overview and
+`docs/superpowers/specs/2026-07-14-webhook-diagnostics-design.md` for the full contract. Every field
+is optional — **absent**, not `null`, whenever a backend can't populate it truthfully.
+
+| Field | Meaning | What to check when set |
+|---|---|---|
+| `op_id` | Echo of Arcadia's request-side ULID | Correlate this webhook to the originating `/operations` POST — the only correlation id `create` has |
+| `idempotency_key` | The op's internal dedupe key | Cross-reference the result cache / worker logs for this op |
+| `attempt` | arq `job_try` | `>1` means a crash/job-loss re-ran this op — check for an earlier `retry_blocked` delivery if the driver is non-idempotent (gameroom, goldentreasure) |
+| `cache_hit: true` | This delivery replayed a cached terminal outcome; the backend was NOT called again | `steps` is `[]` and `session_reuse` is `null` by design on a replay — expected, not a bug |
+| `session_reuse: hit` | A cached session/token was reused; no login this call | Normal steady-state path |
+| `session_reuse: fresh` | First login performed this call | Normal on a cold game or after natural session expiry |
+| `session_reuse: relogin` | A mid-call re-login fired (dead-session / auth-fail code) | Session churn or contention — check for concurrent workers hammering the same game, or an evicted Redis session key |
+| `session_reuse: null` | No session concept (mock, gamevault) or a cache-hit replay | Not itself a signal |
+| `duration_ms` | Wall-clock time for the whole operation | Compare against the backend's typical latency; large values often correlate with `session_reuse: relogin` or a provider that's slow to respond |
+| `steps[]` | Ordered timeline of internal/HTTP steps (`name`, `phase`, `http`, `ok`, `ms`, optional `skipped`/`external`) | The first `ok:false` entry is where it broke; `skipped:true` marks a conditional step not taken this call (e.g. `login.submit` on a session hit) |
+| `failure_kind: retry_blocked` | A non-idempotent driver's re-run was blocked before any provider call | Backend was NOT re-invoked this attempt; reconcile manually only if the *prior* attempt may have partially applied |
+| `failure_kind: preflight` | DB lookup or backend config error — no provider call made | Check `games` / `game_accounts` rows and `games.backend_driver` |
+| `failure_kind: transient` | Provider 5xx / timeout / transient code | Laravel already treats this delivery as final (arq will not retry the backend call); Laravel has already refunded/reverted — safe to let the player retry |
+| `failure_kind: backend` | Provider returned a terminal business error | Read `reason` together with `provider.code` / `provider.message` |
+| `failure_kind: invalid_result` | Backend returned a "success" our schema rejected | Likely a provider response-shape drift — check the backend module against a fresh sample response |
+| `failure_kind: unexpected` | Unhandled exception | Check worker logs (`operation_unexpected_error`) for the traceback |
+| `reason` | The real internal reason (never the generic player-facing `message`) | The actionable string, e.g. `gamevault:7:insufficient_user_balance` |
+| `provider.http_status` | True transport status (honestly `200` even when the error rode a 200-body envelope) | Distinguishes a transport failure from a business-logic failure |
+| `provider.code` | The provider's own business/envelope code, when one exists | Look up in the backend's error-code table (per-backend sections above); absent for yolo and for aspnet business failures (no numeric code exists there) |
+| `provider.message` | Raw, untruncated provider error text | The exact string that drove classification — useful when `reason`'s slug is ambiguous; absent for ultrapanda/vblink (no message field in that API) |
+| `external_user_id` | The resolved backend account id actually used this call | Should match the game account's stored external id; absent on a non-create op can mean it genuinely couldn't be resolved |
+| `balance_before` | Pre-operation balance from a snapshot the backend already took | Gameroom recharge/redeem only (`agentMoney` snapshot) — absent everywhere else |
+| `balance_after` | Post-operation balance the provider's own response carried | Gamevault + gameroom money ops only; absent for yolo/aspnet/ultrapanda/goldentreasure (their money-op success responses carry no balance) — compare against Laravel's ledger if a mismatch is suspected |

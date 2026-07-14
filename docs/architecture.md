@@ -39,6 +39,45 @@ Redis keyed by `idempotency_key` (TTL `result_cache_ttl_seconds`). The executor 
 without re-calling the backend. Transient failures are NOT cached, so an arq re-run retries the backend;
 GameVault's `order_id` dedupe prevents double money movement.
 
+## Webhook diagnostics
+Every webhook (success or failure) may carry a top-level `op_id` echo and an optional `diagnostics`
+object — a purely observational channel for Arcadia's monitoring module; it never gates a
+wallet/credential effect. Assembled in `app/webhook/payload.py::assemble_diagnostics`, populated by
+`app/backends/diagnostics.py::DiagnosticsRecorder` (threaded through `BackendContext` into every
+client) and by `app/operations/executor.py` at each `except` branch. Full contract:
+`docs/superpowers/specs/2026-07-14-webhook-diagnostics-design.md`.
+
+**Shape:** `op_id`, `idempotency_key`, `attempt` (arq `job_try`), `cache_hit` (op-level idempotency
+replay only), `duration_ms`, `steps[]` (`name`, `phase`, `http`, `ok`, `ms`, optional
+`skipped`/`external`); failure-only `failure_kind`, `reason` (the real internal reason, never the
+generic player-facing `message`), `provider` (`http_status`/`code`/`message`, the whole block omitted
+when nothing truthful exists); success-side `external_user_id`, `balance_before` (gameroom
+recharge/redeem snapshot only), `balance_after` (gamevault + gameroom money ops only — yolo/aspnet
+money-op success responses carry no balance, so it stays absent there; every other backend's balance
+flows only through the existing `user_data.balance` on `read`, never through diagnostics).
+
+**`failure_kind` taxonomy** — set by which executor branch fired: `retry_blocked` (non-idempotent
+driver re-run blocked before any provider call), `preflight` (DB lookup or backend-resolution config
+error, no provider call made), `transient` (`TransientBackendError` — timeout/5xx/transient code),
+`backend` (`BackendError` from the backend call), `invalid_result` (backend returned a malformed
+success payload that failed schema validation), `unexpected` (bare `Exception`).
+
+**`session_reuse` vs `cache_hit`:** two independent axes, never conflated. `session_reuse`
+(`hit|fresh|relogin|null`) comes from a session-holding backend's own token/cookie getter (gameroom,
+goldentreasure, aspnet, ultrapanda/vblink); it stays `null` on gamevault/mock, which have no session
+concept — never `false`. `cache_hit` is strictly the op-level idempotency replay in
+`app/operations/result_cache.py`: the executor answered from the cached terminal outcome without
+calling the backend at all. A cache hit always reports `steps: []` and `session_reuse: null` —
+honest, since no HTTP happened on the replay.
+
+**Omit, don't invent:** the governing rule — a confidently-wrong diagnostic is worse than a missing
+one. Fields are absent (never guessed) whenever a backend cannot populate them truthfully:
+`provider_txn_id` does not exist anywhere in the payload (no backend returns one, and it is never
+synthesized from `idempotency_key`, a CSRF token, or a resolved player id); `provider.message` is
+absent for ultrapanda/vblink (the vpower API has no message field); `provider.code` is absent for
+yolo and for aspnet business failures (both only classify free-text into an internal slug — aspnet's
+one genuine provider code is the login `errtype`, present only on login failures).
+
 ## Reverse-engineered backends (Gameroom)
 Gameroom (`app/backends/gameroom/`) is the first session-holding backend: form-urlencoded POST, JWT
 bearer auth with ~6h sessions, and a `{status_code, message, data?}` envelope (`status_code` is the
