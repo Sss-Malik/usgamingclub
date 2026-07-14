@@ -6,6 +6,7 @@ import pytest
 import respx
 
 from app.backends.base import BackendError, TransientBackendError
+from app.backends.diagnostics import DiagnosticsRecorder
 from app.backends.ultrapanda.client import FINGERPRINT, UltraPandaClient
 from app.backends.ultrapanda.crypto import decrypt_xtoken
 from app.backends.ultrapanda.session import (
@@ -16,7 +17,7 @@ from app.backends.ultrapanda.session import (
 BASE = "https://up.test"
 
 
-def _client(http, store=None, redis=None) -> UltraPandaClient:
+def _client(http, store=None, redis=None, diagnostics=None) -> UltraPandaClient:
     return UltraPandaClient(
         base_url=BASE,
         username="TestUP159",
@@ -31,6 +32,7 @@ def _client(http, store=None, redis=None) -> UltraPandaClient:
         session_lock_ttl_seconds=10,
         session_lock_acquire_timeout_seconds=2.0,
         driver_prefix="ultrapanda",
+        diagnostics=diagnostics,
     )
 
 
@@ -220,3 +222,136 @@ async def test_call_does_not_retry_more_than_once_on_repeated_1086(fake_redis):
         c = _client(http, store=store, redis=fake_redis)
         with pytest.raises(TransientBackendError, match="session_dead_after_relogin"):
             await c.call("/user/CurScore", {"token": "DEAD"})
+
+
+# --- diagnostics: provider_code on the login-time map_code raise (no provider_message) ---
+
+@respx.mock
+async def test_login_business_error_carries_provider_code_terminal(fake_redis):
+    respx.post(f"{BASE}/user/login").mock(
+        return_value=httpx.Response(200, json={"code": 5, "message": "帐号或密码错误"})
+    )
+    async with httpx.AsyncClient(base_url=BASE) as http:
+        c = _client(http, redis=fake_redis)
+        with pytest.raises(BackendError) as ei:
+            await c.get_or_login()
+    assert ei.value.reason == "ultrapanda:bad_credentials"
+    assert ei.value.provider_code == 5
+    assert ei.value.provider_message is None          # vpower login errors carry no message field
+
+
+@respx.mock
+async def test_login_business_error_carries_provider_code_transient(fake_redis):
+    respx.post(f"{BASE}/user/login").mock(
+        return_value=httpx.Response(200, json={"code": 167, "message": "high frequency request"})
+    )
+    async with httpx.AsyncClient(base_url=BASE) as http:
+        c = _client(http, redis=fake_redis)
+        with pytest.raises(TransientBackendError) as ei:
+            await c.get_or_login()
+    assert ei.value.reason == "ultrapanda:rate_limited"
+    assert ei.value.provider_code == 167
+    assert ei.value.provider_message is None
+
+
+# --- diagnostics: session events from get_or_login ---
+
+@respx.mock
+async def test_get_or_login_cache_hit_emits_session_hit(fake_redis):
+    store = InMemoryTokenStore()
+    await store.set(42, CachedSession(token="cached_tok", expires_at=int(time.time()) + 3600),
+                    ttl_seconds=3600)
+    rec = DiagnosticsRecorder()
+    async with httpx.AsyncClient(base_url=BASE) as http:
+        c = _client(http, store=store, redis=fake_redis, diagnostics=rec)
+        token = await c.get_or_login()
+    assert token == "cached_tok"
+    assert len(respx.calls) == 0
+    assert rec.snapshot()["session_reuse"] == "hit"
+
+
+@respx.mock
+async def test_get_or_login_fresh_login_emits_session_fresh_and_login_submit_step(fake_redis):
+    respx.post(f"{BASE}/user/login").mock(
+        return_value=httpx.Response(200, json={"code": 20000, "token": "FRESH"})
+    )
+    rec = DiagnosticsRecorder()
+    async with httpx.AsyncClient(base_url=BASE) as http:
+        c = _client(http, redis=fake_redis, diagnostics=rec)
+        token = await c.get_or_login()
+    assert token == "FRESH"
+    snap = rec.snapshot()
+    assert snap["session_reuse"] == "fresh"
+    steps = {s["name"]: s for s in snap["steps"]}
+    assert "login.submit" in steps
+    assert steps["login.submit"]["phase"] == "auth"
+    assert steps["login.submit"]["ok"] is True
+
+
+# --- diagnostics: throttle.acquire + named primary step ---
+
+@respx.mock
+async def test_call_throttled_records_throttle_acquire_step_as_non_http(fake_redis):
+    store = InMemoryTokenStore()
+    await store.set(42, CachedSession(token="t", expires_at=int(time.time()) + 3600),
+                    ttl_seconds=3600)
+    respx.post(f"{BASE}/account/enterScore").mock(
+        return_value=httpx.Response(200, json={"code": 20000, "message": "ok"})
+    )
+    rec = DiagnosticsRecorder()
+    async with httpx.AsyncClient(base_url=BASE) as http:
+        c = _client(http, store=store, redis=fake_redis, diagnostics=rec)
+        await c.call_throttled("/account/enterScore",
+                               {"account": "x", "score": "1", "user_type": 0},
+                               step="recharge.post")
+    steps = {s["name"]: s for s in rec.snapshot()["steps"]}
+    assert "throttle.acquire" in steps
+    assert steps["throttle.acquire"]["phase"] == "preflight"
+    assert steps["throttle.acquire"]["http"] is False
+    assert "recharge.post" in steps
+
+
+@respx.mock
+async def test_call_records_the_given_step_name(fake_redis):
+    store = InMemoryTokenStore()
+    await store.set(42, CachedSession(token="t", expires_at=int(time.time()) + 3600),
+                    ttl_seconds=3600)
+    respx.post(f"{BASE}/user/CurScore").mock(
+        return_value=httpx.Response(200, json={"code": 20000, "LimitNum": "3.00"})
+    )
+    rec = DiagnosticsRecorder()
+    async with httpx.AsyncClient(base_url=BASE) as http:
+        c = _client(http, store=store, redis=fake_redis, diagnostics=rec)
+        await c.call("/user/CurScore", {"token": "t"}, step="agent_balance.read")
+    steps = {s["name"]: s for s in rec.snapshot()["steps"]}
+    assert "agent_balance.read" in steps
+    assert steps["agent_balance.read"]["phase"] == "primary"
+    assert steps["agent_balance.read"]["http"] is True
+
+
+# --- diagnostics: 1086 recovery emits relogin + recovery.relogin step ---
+
+@respx.mock
+async def test_call_1086_recovery_emits_relogin_session_event_and_recovery_step(fake_redis):
+    store = InMemoryTokenStore()
+    await store.set(42, CachedSession(token="DEAD", expires_at=int(time.time()) + 3600),
+                    ttl_seconds=3600)
+    respx.post(f"{BASE}/user/login").mock(
+        return_value=httpx.Response(200, json={"code": 20000, "token": "FRESH"})
+    )
+    respx.post(f"{BASE}/user/CurScore").mock(
+        side_effect=[
+            httpx.Response(200, json={"code": 1086, "message": "Not logged in"}),
+            httpx.Response(200, json={"code": 20000, "LimitNum": "1.50"}),
+        ]
+    )
+    rec = DiagnosticsRecorder()
+    async with httpx.AsyncClient(base_url=BASE) as http:
+        c = _client(http, store=store, redis=fake_redis, diagnostics=rec)
+        body = await c.call("/user/CurScore", {"token": "DEAD"}, step="balance.read")
+    assert body == {"code": 20000, "LimitNum": "1.50"}
+    snap = rec.snapshot()
+    assert snap["session_reuse"] == "relogin"
+    names = [s["name"] for s in snap["steps"]]
+    assert "recovery.relogin" in names
+    assert "balance.read" in names
