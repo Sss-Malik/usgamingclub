@@ -3,6 +3,7 @@ from app.backends._aspnet_cashier.client import AspnetCashierClient
 from app.backends._aspnet_cashier.session import CookieSessionStore
 from app.backends.base import BackendError, GameBackend
 from app.backends.context import GameCredentials
+from app.backends.diagnostics import DiagnosticsRecorder
 from app.backends.gameroom.backend import GameroomBackend
 from app.backends.gameroom.client import GameroomClient
 from app.backends.gamevault.backend import GameVaultBackend
@@ -55,6 +56,7 @@ def resolve_backend(
     settings: Settings,
     session_store=None,                           # Phase 3 — used by gameroom
     redis=None,                                   # Phase 4 — used by goldentreasure (throttle + own session store)
+    diagnostics: DiagnosticsRecorder | None = None,
 ) -> GameBackend:
     """Resolve the backend for an operation from its game's backend_driver.
 
@@ -82,6 +84,7 @@ def resolve_backend(
                 agent_id=credentials.api_agent_id,
                 secret_key=credentials.api_secret_key,
                 http_client=http_client,
+                diagnostics=diagnostics,
             )
         )
     if key == "gameroom":
@@ -97,6 +100,7 @@ def resolve_backend(
                 http_client=http_client,
                 session_store=session_store,
                 game_id=credentials.game_id,
+                diagnostics=diagnostics,
             )
         )
     if key == "goldentreasure":
@@ -113,6 +117,7 @@ def resolve_backend(
                 session_store=GTSessionStore(redis),
                 redis=redis,
                 game_id=credentials.game_id,
+                diagnostics=diagnostics,
             )
         )
     if key in _ASPNET_CASHIER_DRIVERS:
@@ -135,6 +140,7 @@ def resolve_backend(
             lock_acquire_timeout_seconds=settings.aspnet_lock_acquire_timeout_seconds,
             captcha_login_max_attempts=settings.captcha_login_max_attempts,
             driver_prefix=key,
+            diagnostics=diagnostics,
         )
         if key in _ORIONSTARS_FAMILY_DRIVERS:
             return OrionStarsBackend(client)
@@ -159,6 +165,7 @@ def resolve_backend(
                 session_lock_ttl_seconds=settings.vpower_session_lock_ttl_seconds,
                 session_lock_acquire_timeout_seconds=settings.vpower_session_lock_acquire_timeout_seconds,
                 driver_prefix=key,
+                diagnostics=diagnostics,
             )
         )
     if key == "yolo":
@@ -177,6 +184,7 @@ def resolve_backend(
                 session_ttl_seconds=settings.yolo_session_ttl_seconds,
                 login_lock_ttl_seconds=settings.yolo_login_lock_ttl_seconds,
                 login_lock_acquire_timeout_seconds=settings.yolo_login_lock_acquire_timeout_seconds,
+                diagnostics=diagnostics,
             )
         )
     raise BackendError(f"unknown_backend_driver:{driver}")

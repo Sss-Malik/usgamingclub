@@ -4,6 +4,7 @@ import time
 import httpx
 
 from app.backends.base import BackendError, TransientBackendError
+from app.backends.diagnostics import NULL_RECORDER
 from app.backends.ultrapanda.crypto import (
     encrypt_login_cred,
     encrypt_xtoken,
@@ -50,6 +51,7 @@ class UltraPandaClient:
         session_lock_ttl_seconds: int,
         session_lock_acquire_timeout_seconds: float,
         driver_prefix: str,
+        diagnostics=None,
     ) -> None:
         self._base = base_url.rstrip("/")
         self._username = username
@@ -64,6 +66,7 @@ class UltraPandaClient:
         self._lock_ttl = session_lock_ttl_seconds
         self._lock_acquire = session_lock_acquire_timeout_seconds
         self._driver = driver_prefix
+        self._diag = diagnostics or NULL_RECORDER
 
     # ---- session ----
 

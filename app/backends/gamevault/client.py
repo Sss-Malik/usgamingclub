@@ -5,17 +5,22 @@ import time
 import httpx
 
 from app.backends.base import BackendError, TransientBackendError
+from app.backends.diagnostics import NULL_RECORDER
 from app.backends.gamevault.errors import TRANSIENT_CODES, map_code
 
 
 class GameVaultClient:
     """Transport for the GameVault HTTP API: MD5 auth, multipart POST, envelope parsing."""
 
-    def __init__(self, *, base_url: str, agent_id: str, secret_key: str, http_client: httpx.AsyncClient) -> None:
+    def __init__(
+        self, *, base_url: str, agent_id: str, secret_key: str, http_client: httpx.AsyncClient,
+        diagnostics=None,
+    ) -> None:
         self._base_url = base_url.rstrip("/")
         self._agent_id = str(agent_id)
         self._secret_key = secret_key
         self._http = http_client
+        self._diag = diagnostics or NULL_RECORDER
 
     def _auth_fields(self) -> dict[str, str]:
         ts = str(int(time.time()))

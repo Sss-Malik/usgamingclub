@@ -5,6 +5,7 @@ from urllib.parse import urlencode
 import httpx
 
 from app.backends.base import BackendError, TransientBackendError
+from app.backends.diagnostics import NULL_RECORDER
 from app.backends.gameroom.errors import map_response
 from app.backends.gameroom.session import CachedSession, SessionStore
 
@@ -21,6 +22,7 @@ class GameroomClient:
     def __init__(
         self, *, base_url: str, username: str, password: str,
         http_client: httpx.AsyncClient, session_store: SessionStore, game_id: int,
+        diagnostics=None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._username = username
@@ -28,6 +30,7 @@ class GameroomClient:
         self._http = http_client
         self._session = session_store
         self._game_id = game_id
+        self._diag = diagnostics or NULL_RECORDER
 
     # ---- session management ----
 

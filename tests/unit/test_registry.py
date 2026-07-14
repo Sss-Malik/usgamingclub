@@ -513,3 +513,26 @@ def test_resolve_yolo_missing_redis_raises():
         resolve_backend("yolo", credentials=creds, http_client=httpx.AsyncClient(),
                         settings=Settings(api_secret="a", webhook_secret="b"),
                         session_store=None, redis=None)
+
+
+def test_resolve_backend_passes_diagnostics_to_client():
+    from app.backends.diagnostics import DiagnosticsRecorder
+
+    s = _settings()
+    rec = DiagnosticsRecorder()
+    backend = resolve_backend(
+        "gamevault", credentials=_creds("gamevault"),
+        http_client=object(), settings=s, diagnostics=rec,
+    )
+    assert backend._client._diag is rec
+
+
+def test_resolve_backend_defaults_diagnostics_null():
+    from app.backends.diagnostics import NULL_RECORDER
+
+    s = _settings()
+    backend = resolve_backend(
+        "gamevault", credentials=_creds("gamevault"),
+        http_client=object(), settings=s,
+    )
+    assert backend._client._diag is NULL_RECORDER

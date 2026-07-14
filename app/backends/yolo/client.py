@@ -4,6 +4,7 @@ from urllib.parse import urlencode
 import httpx
 
 from app.backends.base import BackendError, TransientBackendError
+from app.backends.diagnostics import NULL_RECORDER
 from app.backends.yolo.errors import looks_like_auth_failure, map_envelope
 from app.backends.yolo.parsers import looks_like_login_page, parse_csrf_token
 from app.backends.yolo.session import CachedSession, SessionStore
@@ -35,6 +36,7 @@ class YoloClient:
         session_ttl_seconds: int = 1800,
         login_lock_ttl_seconds: int = 10,
         login_lock_acquire_timeout_seconds: float = 10.0,
+        diagnostics=None,
     ) -> None:
         self._base = base_url.rstrip("/")
         self._username = username
@@ -45,6 +47,7 @@ class YoloClient:
         self._ttl = session_ttl_seconds
         self._lock_ttl = login_lock_ttl_seconds
         self._lock_timeout = login_lock_acquire_timeout_seconds
+        self._diag = diagnostics or NULL_RECORDER
 
     # ---- session ----
 

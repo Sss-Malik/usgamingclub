@@ -5,6 +5,7 @@ from urllib.parse import urlencode
 import httpx
 
 from app.backends.base import BackendError, TransientBackendError
+from app.backends.diagnostics import NULL_RECORDER
 from app.backends._aspnet_cashier.errors import classify_business_failure_message
 from app.backends._aspnet_cashier.login import _BASE_HEADERS, _FORM_CT, _SESSION_COOKIE, login
 from app.backends._aspnet_cashier.parsers import (
@@ -43,6 +44,7 @@ class AspnetCashierClient:
         lock_acquire_timeout_seconds: float,
         captcha_login_max_attempts: int,
         driver_prefix: str,
+        diagnostics=None,
     ) -> None:
         self._base = base_url.rstrip("/")
         self._username = username
@@ -56,6 +58,7 @@ class AspnetCashierClient:
         self._lock_acquire = lock_acquire_timeout_seconds
         self._max_attempts = captcha_login_max_attempts
         self._driver = driver_prefix
+        self._diag = diagnostics or NULL_RECORDER
 
     # ---- session ----
 

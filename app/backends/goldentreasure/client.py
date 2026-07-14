@@ -6,6 +6,7 @@ import time
 import httpx
 
 from app.backends.base import BackendError, TransientBackendError
+from app.backends.diagnostics import NULL_RECORDER
 from app.backends.goldentreasure.crypto import (
     aes_b64,
     login_aes_key,
@@ -48,6 +49,7 @@ class GoldenTreasureClient:
         redis,                                             # raw redis client for the throttle
         game_id: int,
         fingerprint: str = "db3bb59096022abb85b4612d53387101",
+        diagnostics=None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._username = username
@@ -57,6 +59,7 @@ class GoldenTreasureClient:
         self._redis = redis
         self._game_id = game_id
         self._fingerprint = fingerprint
+        self._diag = diagnostics or NULL_RECORDER
 
     # ---- session management ----
 
