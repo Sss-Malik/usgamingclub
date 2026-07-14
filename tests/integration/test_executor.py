@@ -152,3 +152,56 @@ async def test_preflight_game_not_found_posts_failed(seeded):
     await _run(payload, seeded, resolve=_resolver(_FakeBackend()))
     body = json.loads(route.calls.last.request.content.decode())
     assert body["status"] == "failed" and body["message"].startswith("game_not_found")
+
+
+@respx.mock
+async def test_success_webhook_has_diagnostics_with_op_id(seeded):
+    route = respx.post(URL).mock(return_value=httpx.Response(200, json={"ok": True}))
+    payload = Operation(
+        action="read", type="READ_BALANCE", idempotency_key="read:diag1",
+        user_id=42, backend_name="milkyway", username="player_one", op_id="01J",
+        correlation={"read_id": 1},
+    ).model_dump()
+    backend = _FakeBackend()
+    await _run(payload, seeded, resolve=_resolver(backend))
+    body = json.loads(route.calls.last.request.content.decode())
+    d = body["diagnostics"]
+    assert body["op_id"] == "01J" and d["op_id"] == "01J"
+    assert d["cache_hit"] is False and d["attempt"] == 1
+    assert isinstance(d["duration_ms"], int) and d["duration_ms"] >= 0
+    assert "failure_kind" not in d  # success
+
+
+@respx.mock
+async def test_backend_failure_sets_failure_kind_and_reason(seeded):
+    route = respx.post(URL).mock(return_value=httpx.Response(200, json={"ok": True}))
+    backend = _FakeBackend(raise_exc=BackendError("mock:insufficient"))
+    await _run(_recharge_payload(), seeded, resolve=_resolver(backend))
+    body = json.loads(route.calls.last.request.content.decode())
+    assert body["status"] == "failed"
+    assert body["message"] == "mock:insufficient"          # unchanged player path
+    assert body["diagnostics"]["failure_kind"] == "backend"
+    assert body["diagnostics"]["reason"] == "mock:insufficient"
+
+
+@respx.mock
+async def test_preflight_failure_kind(seeded):
+    route = respx.post(URL).mock(return_value=httpx.Response(200, json={"ok": True}))
+    payload = Operation(
+        action="recharge", type="RECHARGE", idempotency_key="recharge:t10",
+        user_id=42, backend_name="does-not-exist", username="player_one", amount=50,
+        correlation={"transaction_id": "t10"},
+    ).model_dump()
+    await _run(payload, seeded, resolve=_resolver(_FakeBackend()))
+    body = json.loads(route.calls.last.request.content.decode())
+    assert body["diagnostics"]["failure_kind"] == "preflight"
+
+
+@respx.mock
+async def test_retry_blocked_kind(seeded):
+    route = respx.post(URL).mock(return_value=httpx.Response(200, json={"ok": True}))
+    backend = _FakeBackend()
+    await _run(_recharge_payload(), seeded, resolve=_resolver(backend), retry_blocked=True)
+    body = json.loads(route.calls.last.request.content.decode())
+    assert body["status"] == "error"
+    assert body["diagnostics"]["failure_kind"] == "retry_blocked"

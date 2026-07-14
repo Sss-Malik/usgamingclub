@@ -4,6 +4,7 @@ import json
 import httpx
 import respx
 
+from app.backends.base import BackendError
 from app.config import Settings
 from app.operations.executor import execute_operation
 from app.operations.result_cache import CachedOutcome, InMemoryResultCache
@@ -136,3 +137,35 @@ async def test_retry_blocked_reports_error_without_calling_backend(seeded):
     assert body["status"] == "error" and "Something went wrong" in body["message"]
     # NOT cached — the operation may have been applied on the prior attempt.
     assert await cache.get("rb-1") is None
+
+
+@respx.mock
+async def test_cache_replay_reports_cache_hit_and_no_steps(seeded):
+    # First run fails terminally (cached); second run replays.
+    route = respx.post(WEBHOOK).mock(return_value=httpx.Response(200, json={"ok": True}))
+    cache = InMemoryResultCache()
+
+    class FailingBackend:
+        async def read_balance(self, ctx):
+            raise BackendError("mock:insufficient")
+
+    def fake_resolve(driver, **kwargs):
+        return FailingBackend()
+
+    payload = _read_payload("read:cache-diag")
+
+    async with httpx.AsyncClient() as client:
+        await execute_operation(payload, session_factory=seeded, http_client=client,
+                                settings=_settings(), result_cache=cache, resolve=fake_resolve)
+    first = json.loads(route.calls.last.request.content.decode())
+
+    async with httpx.AsyncClient() as client:
+        await execute_operation(payload, session_factory=seeded, http_client=client,
+                                settings=_settings(), result_cache=cache, resolve=fake_resolve)
+    second = json.loads(route.calls.last.request.content.decode())
+
+    d = second["diagnostics"]
+    assert d["cache_hit"] is True
+    assert d["steps"] == []
+    assert d["failure_kind"] == first["diagnostics"]["failure_kind"]
+    assert d["reason"] == first["diagnostics"]["reason"]
