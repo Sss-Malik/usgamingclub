@@ -1,8 +1,29 @@
+import pytest
+
+from app.backends._aspnet_cashier.client import AspnetCashierClient
 from app.backends._aspnet_cashier.errors import (
     LOGIN_ERRTYPE_MESSAGES,
     classify_business_failure_message,
     login_errtype_to_code,
 )
+from app.backends.base import BackendError
+from tests.conftest import FakeCaptchaSolver
+
+
+@pytest.fixture
+def aspnet_client() -> AspnetCashierClient:
+    """A client with no reachable HTTP/session store — only used for the pure
+    message-mapping methods (business_failure_to_error, classify), which never
+    touch the network."""
+    return AspnetCashierClient(
+        base_url="http://x", username="u", password="p",
+        http_client=object(),
+        session_store=object(),
+        captcha_solver=FakeCaptchaSolver(),
+        game_id=1, session_ttl_seconds=1, lock_ttl_seconds=1,
+        lock_acquire_timeout_seconds=1.0, captcha_login_max_attempts=1,
+        driver_prefix="orionstars",
+    )
 
 
 def test_login_errtype_known_codes_map_to_short_codes():
@@ -49,3 +70,27 @@ def test_business_failure_messages_recharge_redeem_create_reset():
 def test_business_failure_unknown_message_returns_unknown_slug():
     out = classify_business_failure_message("Some surprise message we have not seen")
     assert out.startswith("unknown:")
+
+
+# --- BackendError provider_message/provider_code carried by the client's mappers ---
+
+def test_business_failure_to_error_sets_provider_message(aspnet_client):
+    msg = "surplus money is insufficient for this operation"
+    err = aspnet_client.business_failure_to_error(msg)
+    assert err.provider_message == msg          # untruncated
+    assert err.provider_code is None
+    assert err.reason == "orionstars:insufficient_agent_funds"  # driver_prefix from fixture
+
+
+def test_business_failure_to_error_keeps_full_message_even_when_unknown(aspnet_client):
+    msg = "a completely novel sentinel message the app has never classified before, long enough to exceed sixty characters"
+    err = aspnet_client.business_failure_to_error(msg)
+    assert err.provider_message == msg          # untruncated even though the slug itself is truncated
+    assert err.reason == f"orionstars:unknown:{msg[:60]}"
+
+
+def test_classify_unknown_sentinel_raises_with_untruncated_provider_message(aspnet_client):
+    html = "<html>some totally unrecognized page body that isn't a known sentinel</html>"
+    with pytest.raises(BackendError) as ei:
+        aspnet_client.classify(html)
+    assert ei.value.provider_message == html

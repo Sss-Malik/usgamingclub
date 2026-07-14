@@ -65,6 +65,7 @@ class AspnetCashierClient:
     async def get_or_login(self) -> str:
         cached = await self._store.get(self._game_id)
         if not _expired(cached):
+            self._diag.session_event("hit")
             return cached.cookie       # type: ignore[union-attr]
         try:
             async with self._store.login_lock(
@@ -73,12 +74,17 @@ class AspnetCashierClient:
             ):
                 cached = await self._store.get(self._game_id)
                 if not _expired(cached):
+                    self._diag.session_event("hit")
                     return cached.cookie       # type: ignore[union-attr]
-                return await self._do_login()
+                cookie = await self._do_login()
+                self._diag.session_event("fresh")
+                return cookie
         except TimeoutError:
             # Lock contention. The lock is efficiency-only here (sessions coexist), so
             # fall through to an unlocked login — a wasted captcha beats a failed op.
-            return await self._do_login()
+            cookie = await self._do_login()
+            self._diag.session_event("fresh")
+            return cookie
 
     async def _do_login(self) -> str:
         cookie = await login(
@@ -87,6 +93,7 @@ class AspnetCashierClient:
             captcha_solver=self._captcha,
             max_attempts=self._max_attempts,
             driver_prefix=self._driver,
+            diag=self._diag,
         )
         await self._store.set(
             self._game_id,
@@ -101,18 +108,26 @@ class AspnetCashierClient:
         self, method: str, path: str, *,
         form: Mapping[str, str | int] | None = None,
         params: Mapping[str, str | int] | None = None,
+        step: str = "primary", phase: str = "primary",
     ) -> str:
         """One module-page request with cookie + Accept-Language. Retries exactly once
         if the response indicates a dead session (500 NRE, or 200 returning the login page).
 
+        `step`/`phase` name the diagnostics step recorded around the primary request; the
+        op-facing helpers below pass their own pinned names, and `create_account` (which has
+        no dedicated helper) passes step="create.get"/"create.post" directly.
+
         Returns the raw response text; callers parse it.
         """
         cookie = await self.get_or_login()
-        resp = await self._do_request(method, path, cookie, form=form, params=params)
+        async with self._diag.step(step, phase=phase):
+            resp = await self._do_request(method, path, cookie, form=form, params=params)
         if self._looks_dead(resp):
             await self._store.clear(self._game_id)
-            cookie = await self.get_or_login()
-            resp = await self._do_request(method, path, cookie, form=form, params=params)
+            async with self._diag.step("recovery", phase="recovery"):
+                cookie = await self.get_or_login()
+                resp = await self._do_request(method, path, cookie, form=form, params=params)
+            self._diag.session_event("relogin")
             if self._looks_dead(resp):
                 raise TransientBackendError(f"{self._driver}:session_dead_after_relogin")
         if resp.status_code >= 500:
@@ -161,8 +176,11 @@ class AspnetCashierClient:
 
     async def fetch_accounts_list_html(self) -> str:
         """Authenticated GET of the workhorse panel. Used by agent_balance + search bootstrap."""
-        return await self.request_text("GET", "/Module/AccountManager/AccountsList.aspx",
-                                       params={"timestamp": str(int(time.time()))})
+        return await self.request_text(
+            "GET", "/Module/AccountManager/AccountsList.aspx",
+            params={"timestamp": str(int(time.time()))},
+            step="resolve.accounts_list_get", phase="resolve",
+        )
 
     async def search_account(self, query: str) -> list[tuple[str, str]]:
         """Run the ctl16 search and return all (uid, gid) pairs from the result HTML.
@@ -187,6 +205,7 @@ class AspnetCashierClient:
             form["__VIEWSTATEGENERATOR"] = vs.viewstate_generator
         body = await self.request_text(
             "POST", "/Module/AccountManager/AccountsList.aspx", form=form,
+            step="resolve.search_post", phase="resolve",
         )
         return parse_update_select(body)
 
@@ -195,6 +214,7 @@ class AspnetCashierClient:
         body = await self.request_text(
             "POST", "/Module/AccountManager/AccountsList.aspx",
             form={"tourl": str(tourl), "getpassuid": uid, "getpassgid": gid},
+            step="dialog.tourl_post", phase="dialog",
         )
         return parse_dialog_response(body)
 
@@ -207,7 +227,7 @@ class AspnetCashierClient:
         txtConfirmPass/txtSureConfirmPass for reset). Returns the POST response text.
         """
         path = dialog_url if dialog_url.startswith("/") else "/" + dialog_url
-        get_body = await self.request_text("GET", path)
+        get_body = await self.request_text("GET", path, step="dialog.get", phase="dialog")
         vs = parse_viewstate(get_body)
         form: dict[str, str] = {
             "__EVENTTARGET": "Button1",
@@ -219,7 +239,7 @@ class AspnetCashierClient:
         if vs.event_validation is not None:
             form["__EVENTVALIDATION"] = vs.event_validation
         form.update(extra_fields)
-        return await self.request_text("POST", path, form=form)
+        return await self.request_text("POST", path, form=form, step="dialog.post", phase="dialog")
 
     async def fetch_agent_balance_dollars(self) -> int:
         """Read the agent's `Balance:NN` widget from AccountsList.aspx. Returns whole dollars."""
@@ -231,6 +251,7 @@ class AspnetCashierClient:
         body = await self.request_text(
             "POST", "/Module/AccountManager/AccountsList.aspx",
             form={"getscoreuserid": uid},
+            step="balance.getscore_post", phase="balance",
         )
         return parse_get_score_response(body)
 
@@ -256,6 +277,7 @@ class AspnetCashierClient:
             form["__VIEWSTATEGENERATOR"] = vs.viewstate_generator
         body = await self.request_text(
             "POST", "/Module/AccountManager/AccountsList.aspx", form=form,
+            step="resolve.search_post", phase="resolve",
         )
         return parse_milkyway_balance_row(body, account=query)
 
@@ -265,13 +287,19 @@ class AspnetCashierClient:
         """Returns (kind, args). Raises BackendError on `kind == 'unknown'`."""
         kind, args = parse_sentinel(html)
         if kind == "unknown":
-            raise BackendError(f"{self._driver}:unknown_sentinel:{html[:80]!r}")
+            raise BackendError(f"{self._driver}:unknown_sentinel:{html[:80]!r}",
+                               provider_message=html)
         return kind, args
 
     def business_failure_to_error(self, message: str) -> BackendError:
-        """Map a business-failure sentinel message to a driver-prefixed BackendError."""
+        """Map a business-failure sentinel message to a driver-prefixed BackendError.
+
+        OP business failures carry no provider code (the portal returns a bare inline-script
+        message, not a coded error), so only `provider_message` is populated — untruncated,
+        unlike the slug itself which is capped at 60 chars for unknown messages.
+        """
         slug = classify_business_failure_message(message)
-        return BackendError(f"{self._driver}:{slug}")
+        return BackendError(f"{self._driver}:{slug}", provider_message=message)
 
 
 def _str_map(d: Mapping) -> dict[str, str]:
