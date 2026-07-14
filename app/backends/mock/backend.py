@@ -23,30 +23,36 @@ class MockBackend:
             raise BackendError(self._fail_reason)
 
     async def create_account(self, ctx: BackendContext) -> CreateAccountResult:
-        self._maybe_fail()
-        username = ctx.account_username or f"mock_{ctx.user_id}_{ctx.credentials.game_id}"
-        return CreateAccountResult(
-            username=username,
-            password="MockPass123!",
-            external_user_id=f"EXT{ctx.user_id}{ctx.credentials.game_id}",
-        )
+        async with ctx.diag.step("create_account.build", phase="finalize", http=False):
+            self._maybe_fail()
+            username = ctx.account_username or f"mock_{ctx.user_id}_{ctx.credentials.game_id}"
+            return CreateAccountResult(
+                username=username,
+                password="MockPass123!",
+                external_user_id=f"EXT{ctx.user_id}{ctx.credentials.game_id}",
+            )
 
     async def read_balance(self, ctx: BackendContext) -> ReadBalanceResult:
-        self._maybe_fail()
-        return ReadBalanceResult(balance=127.5)
+        async with ctx.diag.step("read_balance.build", phase="finalize", http=False):
+            self._maybe_fail()
+            return ReadBalanceResult(balance=127.5)
 
     async def reset_password(self, ctx: BackendContext) -> ResetPasswordResult:
-        self._maybe_fail()
-        return ResetPasswordResult(password="MockReset123!")
+        async with ctx.diag.step("reset_password.build", phase="finalize", http=False):
+            self._maybe_fail()
+            return ResetPasswordResult(password="MockReset123!")
 
     async def recharge(self, ctx: BackendContext, *, amount: int) -> RechargeResult:
-        self._maybe_fail()
-        return RechargeResult(balance=float(amount))
+        async with ctx.diag.step("recharge.build", phase="finalize", http=False):
+            self._maybe_fail()
+            return RechargeResult(balance=float(amount))
 
     async def redeem(self, ctx: BackendContext, *, amount: int) -> RedeemResult:
-        self._maybe_fail()
-        return RedeemResult(balance=0.0)
+        async with ctx.diag.step("redeem.build", phase="finalize", http=False):
+            self._maybe_fail()
+            return RedeemResult(balance=0.0)
 
     async def agent_balance(self, ctx: BackendContext) -> AgentBalanceResult:
-        self._maybe_fail()
-        return AgentBalanceResult(agent_balance=1000.0)
+        async with ctx.diag.step("agent_balance.build", phase="finalize", http=False):
+            self._maybe_fail()
+            return AgentBalanceResult(agent_balance=1000.0)
