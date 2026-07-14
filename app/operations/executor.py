@@ -28,6 +28,7 @@ async def execute_operation(
     session_store=None,
     redis=None,
     retry_blocked: bool = False,
+    attempt: int = 1,
     resolve=_resolve_backend,
 ) -> None:
     if result_cache is None:

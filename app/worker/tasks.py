@@ -19,4 +19,5 @@ async def execute_operation_task(ctx: dict, payload: dict) -> None:
         session_store=ctx["session_store"],
         redis=ctx["redis_cache"],
         retry_blocked=retry_blocked,
+        attempt=job_try,
     )

@@ -74,3 +74,21 @@ async def test_task_does_not_block_when_max_tries_absent(monkeypatch, seeded):
                "user_id": 42, "backend_name": "GameVault Demo", "username": "user020301"}
     await tasks.execute_operation_task(ctx, payload)
     assert captured["kwargs"]["retry_blocked"] is False
+
+
+async def test_worker_passes_job_try_as_attempt(monkeypatch, seeded):
+    captured = {}
+
+    async def fake_execute(payload, **kwargs):
+        captured["kwargs"] = kwargs
+
+    monkeypatch.setattr(tasks, "execute_operation", fake_execute)
+    ctx = {
+        "http_client": object(), "session_factory": seeded, "result_cache": object(),
+        "session_store": object(), "redis_cache": object(),
+        "job_try": 3,
+    }
+    payload = {"action": "read", "type": "READ_BALANCE", "idempotency_key": "read:k",
+               "user_id": 42, "backend_name": "milkyway", "username": "player_one"}
+    await tasks.execute_operation_task(ctx, payload)
+    assert captured["kwargs"]["attempt"] == 3
