@@ -60,6 +60,7 @@ async def create(request: Request, raw: bytes = Depends(verify_request_signature
         idempotency_key=f"create:{req.user_id}:{req.backend_name}:{_request_ts(request)}",
         user_id=req.user_id, backend_name=req.backend_name,
         account_username=generate_username(req.full_name, provided=req.username),
+        op_id=req.op_id,
     )
     return await _enqueue(request, op)
 
@@ -72,6 +73,7 @@ async def recharge(request: Request, raw: bytes = Depends(verify_request_signatu
         idempotency_key=f"recharge:{req.transaction_id}",
         user_id=req.user_id, backend_name=req.backend_name, username=req.username,
         amount=req.amount, correlation={"transaction_id": req.transaction_id},
+        op_id=req.op_id,
     )
     return await _enqueue(request, op)
 
@@ -84,6 +86,7 @@ async def withdraw(request: Request, raw: bytes = Depends(verify_request_signatu
         idempotency_key=f"redeem:{req.redeem_id}",
         user_id=req.user_id, backend_name=req.backend_name, username=req.username,
         amount=req.amount, correlation={"redeem_id": req.redeem_id},
+        op_id=req.op_id,
     )
     return await _enqueue(request, op)
 
@@ -96,6 +99,7 @@ async def reset_password(request: Request, raw: bytes = Depends(verify_request_s
         idempotency_key=f"reset_password:{req.reset_password_id}",
         user_id=req.user_id, backend_name=req.backend_name, username=req.username,
         correlation={"reset_password_id": req.reset_password_id},
+        op_id=req.op_id,
     )
     return await _enqueue(request, op)
 
@@ -114,6 +118,7 @@ async def freeplay(request: Request, raw: bytes = Depends(verify_request_signatu
         idempotency_key=f"freeplay:{corr_id}",
         user_id=req.user_id, backend_name=req.backend_name, username=req.username,
         amount=req.amount, correlation=correlation,
+        op_id=req.op_id,
     )
     return await _enqueue(request, op)
 
@@ -126,5 +131,6 @@ async def read(request: Request, raw: bytes = Depends(verify_request_signature))
         idempotency_key=f"read:{req.read_id}",
         user_id=req.user_id, backend_name=req.backend_name, username=req.username,
         correlation={"read_id": req.read_id},
+        op_id=req.op_id,
     )
     return await _enqueue(request, op)

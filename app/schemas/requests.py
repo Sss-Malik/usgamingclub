@@ -8,6 +8,7 @@ class _In(BaseModel):
     model_config = ConfigDict(extra="ignore")
     user_id: int
     backend_name: str = Field(min_length=1)
+    op_id: str | None = None
 
 
 class CreateRequest(_In):
@@ -70,4 +71,5 @@ class Operation(BaseModel):
     username: str | None = None
     account_username: str | None = None
     amount: int | None = Field(default=None, ge=0)
+    op_id: str | None = None
     correlation: dict[str, str | int] = Field(default_factory=dict)
