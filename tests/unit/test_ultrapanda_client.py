@@ -224,6 +224,87 @@ async def test_call_does_not_retry_more_than_once_on_repeated_1086(fake_redis):
             await c.call("/user/CurScore", {"token": "DEAD"})
 
 
+# --- session-death via code 52 (live incident 2026-07) ---
+#
+# The vpower server session dies well within our cache TTL and signals the dead session
+# with code 52 (mapped `no_permission`), NOT the documented 1086 — which was never observed
+# live. Because the client only re-logged-in on 1086, a stale cached token produced ~10-30 min
+# bursts where every op (recharge/read/create) returned no_permission until the Redis cache
+# expired. So code 52 on a call must ALSO trigger clear → re-login → retry-once.
+
+@respx.mock
+async def test_call_retries_once_after_no_permission_52(fake_redis):
+    """Code 52 on a call is treated as session death: clear cache → re-login → retry once.
+    A read/recharge that fails 52 on a dead cached session must succeed on the fresh one."""
+    store = InMemoryTokenStore()
+    await store.set(42, CachedSession(token="DEAD", expires_at=int(time.time()) + 3600),
+                    ttl_seconds=3600)
+    respx.post(f"{BASE}/user/login").mock(
+        return_value=httpx.Response(200, json={"code": 20000, "token": "FRESH"})
+    )
+    route = respx.post(f"{BASE}/account/getPlayerScore").mock(
+        side_effect=[
+            httpx.Response(200, json={"code": 52, "message": "no permission"}),
+            httpx.Response(200, json={"code": 20000, "curScore": 42.0}),
+        ]
+    )
+    async with httpx.AsyncClient(base_url=BASE) as http:
+        c = _client(http, store=store, redis=fake_redis)
+        body = await c.call("/account/getPlayerScore", {"account": "u01"}, step="balance.read")
+    assert body == {"code": 20000, "curScore": 42.0}
+    assert route.call_count == 2
+    cached = await store.get(42)
+    assert cached is not None and cached.token == "FRESH"
+
+
+@respx.mock
+async def test_call_persistent_52_after_relogin_returns_body_for_terminal_mapping(fake_redis):
+    """A *fresh* session that STILL returns 52 is a genuine permission error, not session
+    death. It must fall through (body returned) so the backend maps it to terminal
+    `no_permission` — NOT be masked as a transient `session_dead_after_relogin` (the 1086-only
+    behaviour). Money ops stay safe: a 52 is a rejection, so the op never executed either time."""
+    store = InMemoryTokenStore()
+    await store.set(42, CachedSession(token="DEAD", expires_at=int(time.time()) + 3600),
+                    ttl_seconds=3600)
+    respx.post(f"{BASE}/user/login").mock(
+        return_value=httpx.Response(200, json={"code": 20000, "token": "FRESH"})
+    )
+    route = respx.post(f"{BASE}/account/getPlayerScore").mock(
+        return_value=httpx.Response(200, json={"code": 52, "message": "no permission"})
+    )
+    async with httpx.AsyncClient(base_url=BASE) as http:
+        c = _client(http, store=store, redis=fake_redis)
+        body = await c.call("/account/getPlayerScore", {"account": "u01"})
+    assert body == {"code": 52, "message": "no permission"}
+    assert route.call_count == 2
+
+
+@respx.mock
+async def test_call_52_recovery_emits_relogin_session_event_and_recovery_step(fake_redis):
+    store = InMemoryTokenStore()
+    await store.set(42, CachedSession(token="DEAD", expires_at=int(time.time()) + 3600),
+                    ttl_seconds=3600)
+    respx.post(f"{BASE}/user/login").mock(
+        return_value=httpx.Response(200, json={"code": 20000, "token": "FRESH"})
+    )
+    respx.post(f"{BASE}/account/getPlayerScore").mock(
+        side_effect=[
+            httpx.Response(200, json={"code": 52, "message": "no permission"}),
+            httpx.Response(200, json={"code": 20000, "curScore": 1.0}),
+        ]
+    )
+    rec = DiagnosticsRecorder()
+    async with httpx.AsyncClient(base_url=BASE) as http:
+        c = _client(http, store=store, redis=fake_redis, diagnostics=rec)
+        body = await c.call("/account/getPlayerScore", {"account": "u01"}, step="balance.read")
+    assert body == {"code": 20000, "curScore": 1.0}
+    snap = rec.snapshot()
+    assert snap["session_reuse"] == "relogin"
+    names = [s["name"] for s in snap["steps"]]
+    assert "recovery.relogin" in names
+    assert "balance.read" in names
+
+
 # --- diagnostics: provider_code on the login-time map_code raise (no provider_message) ---
 
 @respx.mock

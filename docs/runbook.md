@@ -71,6 +71,29 @@ Retries on conn-error/5xx/404 with backoff up to `WEBHOOK_MAX_BUDGET_SECONDS` (d
 - The agent account must **not have 2FA enabled** — Google Authenticator (`code:30200`/`30201`) and
   system verify codes (`code:30100`) require operator interaction; our automation can't satisfy them.
 
+## UltraPanda / VBlink (vpower — shared provider, `ultrapanda` + `vblink` drivers)
+- Set `games.backend_driver='ultrapanda'` or `'vblink'` plus `backend_url` / `username` / `password`
+  (the agent login). Same wire protocol; only the host differs. Both are `NON_IDEMPOTENT_DRIVERS`.
+- Sessions cached in Redis (`vpower_session:{game_id}`, TTL `vpower_session_ttl_seconds`, default
+  **300s**). First op lazy-logs-in; later ops reuse the token. Force a re-login:
+  `redis-cli DEL vpower_session:<game_id>`.
+- **`*:no_permission` in a burst (code 52) = a DEAD SESSION, not a permissions problem.** The vpower
+  server session dies well inside our cache window and signals it on a call with **code 52**, not the
+  documented 1086. The client now treats 52 as session-death (clear → re-login → retry-once), so a
+  dead session self-heals on the next op. If you still see a run of `no_permission`:
+  1. Confirm the pattern — fresh login succeeds, the same cached token fails 52 minutes later. Check
+     `session_reuse` in diagnostics: `relogin` on the recovering op, `hit` on the failing ones.
+  2. If a *fresh* login also gets 52 (recovery.relogin step present, then still `no_permission`), it
+     is a **genuine** permission error — the agent account is disabled or the player belongs to a
+     different agent. That is operator-side: check the agent account at the provider.
+  3. `redis-cli DEL vpower_session:<game_id>` forces a clean re-login.
+- **`insufficient_agent_funds` (code 21 on recharge) is real and operator-side** — the agent/house
+  float is empty. Top it up at the provider; not a code issue.
+- `unknown:<code>` (e.g. `unknown:223`) = a vpower code we haven't mapped in
+  `app/backends/ultrapanda/errors.py`. Grab the provider `code` from diagnostics and add a mapping.
+- A worker crash during RECHARGE/REDEEM: same `_max_tries=1` retry-blocked path as gameroom (backend
+  never re-called). If the score had already applied, reconcile via the agent UI.
+
 ## Webhook diagnostics — operator field reference
 Every webhook (success or failure) may carry `op_id` (top-level) and a `diagnostics` object — see
 `docs/architecture.md` ("Webhook diagnostics") for the shape overview and
