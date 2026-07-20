@@ -17,6 +17,12 @@ from app.backends.ultrapanda.session import CachedSession, TokenStore
 FINGERPRINT = "45657e48dc42985f3e021fc065112c22"
 """Constant device fingerprint. Server doesn't validate (findings §7.4)."""
 
+# vpower codes that mean "your session is no longer valid on a call". 1086 ("Not logged in")
+# is the documented one; 52 ("no permission") is what the live server actually returns when the
+# server-side session has died (2026-07 incident — 1086 was never observed live). Either one
+# triggers cache-clear → re-login → retry-once in `call()`.
+_SESSION_DEATH_CODES = frozenset({1086, 52})
+
 _BASE_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -143,19 +149,31 @@ class UltraPandaClient:
         self, path: str, params: dict | None = None, *, op: str = "",
         step: str = "primary", phase: str = "primary",
     ) -> dict:
-        """Signed POST with session-death detection. If the response is `code 1086`
-        (Not logged in), clear the cached token, re-login, and retry the call once.
+        """Signed POST with session-death detection. If the response is a session-death code
+        (`1086` "Not logged in" OR `52` "no permission"), clear the cached token, re-login, and
+        retry the call once.
+
+        `52` was added after the 2026-07 live incident: the vpower server session dies well
+        within our cache TTL and signals the dead session with code 52, NOT the documented 1086
+        (which was never observed live). Reusing the stale cached token then failed every op with
+        `no_permission` for the rest of the ~30-min cache window. A 52 is a *rejection*, so the op
+        never executed — retrying after re-login is safe on the non-idempotent score endpoint,
+        the same reasoning that already justifies the 1086 retry.
         """
         params = dict(params or {})
         token = await self.get_or_login()
         async with self._diag.step(step, phase=phase):
             body = await self._do_call(path, params, token=token)
-        if body.get("code") == 1086:
+        if body.get("code") in _SESSION_DEATH_CODES:
             async with self._diag.step("recovery.relogin", phase="recovery"):
                 await self._store.clear(self._game_id)
                 token = await self.get_or_login()
                 self._diag.session_event("relogin")
                 body = await self._do_call(path, params, token=token)
+            # After a fresh login, a *persistent* 1086 means the session genuinely won't hold —
+            # transient. A *persistent* 52 on a demonstrably-fresh session is NOT session death;
+            # it is a real permission error (cross-agent / disabled agent), so let it fall through
+            # to the backend's terminal `no_permission` mapping rather than mask it as transient.
             if body.get("code") == 1086:
                 raise TransientBackendError(f"{self._driver}:session_dead_after_relogin")
         return body

@@ -340,9 +340,11 @@ Coverage:
 ## Open questions (not blocking)
 
 1. **Exact "session expired" code on a call** is inferred (frontend dict says 1086) but not directly observed. Implementation treats 1086 + `code 5` on non-login + HTTP 401/403 as session-death; we may need to add more triggers after first incident.
+   - **RESOLVED (2026-07, first incident).** The live server signals a dead session on a call with **`code 52` ("no permission")**, *not* 1086 (never observed live). vblink ops ran green immediately after a fresh login and returned `no_permission` on the same cached token ~10-20 min later, in ~10-30 min bursts bounded by the Redis cache TTL — i.e. the server session dies well within our cache window. Fix: `client.call()` now treats **52 as session-death too** (clear → re-login → retry-once); a *persistent* 52 on a fresh session falls through to the terminal `no_permission` mapping (it is then a genuine permission error, not session death). Retry is safe on the non-idempotent score endpoint because a 52 is a rejection (the op never executed) — same posture as the 1086 retry.
 2. **Nonexistent-player on `getPlayerScore`** — untested by the doc. Will surface whatever code the backend returns; expected to be `code 22` or HTTP 500.
 3. **Throttle scope** — applied per `game_id` (one Laravel game → one agent → one throttle key). If two distinct games share an agent login, throttles run independently and could collide. The findings doc doesn't surface this; flag for first incident.
 4. **Token expiry** — the server doesn't return an expiry timestamp. 30-min cache TTL is conservative; if production sessions actually live longer or shorter, tighten/loosen based on logs.
+   - **RESOLVED (2026-07).** Sessions live well under 30 min (observed good at +6 min, dead by +20 min). `vpower_session_ttl_seconds` default lowered **1800 → 300** so the cached token stays inside the provider's real session lifetime — belt-and-braces with the code-52 relogin recovery above.
 
 ## Build sequence (informs the plan)
 

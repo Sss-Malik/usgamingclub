@@ -74,7 +74,11 @@ def test_db_driver_override_changes_dsn(monkeypatch):
 def test_vpower_defaults():
     from app.config import Settings
     s = Settings()
-    assert s.vpower_session_ttl_seconds == 1800
+    # Shortened from 1800 after the 2026-07 incident: the vpower server session dies well
+    # within 30 min (observed good at +6 min, dead by +20 min), so a 5-min cache keeps our
+    # token comfortably inside the provider's real session lifetime. Belt-and-braces with the
+    # code-52 relogin recovery in the client.
+    assert s.vpower_session_ttl_seconds == 300
     assert s.vpower_throttle_ttl_seconds == 6
     assert s.vpower_throttle_acquire_timeout_seconds == 10.0
     assert s.vpower_session_lock_ttl_seconds == 10

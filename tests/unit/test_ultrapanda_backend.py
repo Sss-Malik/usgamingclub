@@ -178,6 +178,48 @@ async def test_recharge_insufficient_agent_funds_raises_terminal(fake_redis):
     assert ei.value.reason == "ultrapanda:insufficient_agent_funds"
 
 
+@respx.mock
+async def test_recharge_self_heals_when_session_died_with_code_52(fake_redis):
+    """End-to-end money-op guarantee: a recharge whose cached session has died (code 52)
+    re-logs-in and retries once, then succeeds — so the live no_permission burst self-heals.
+    The score POST runs exactly twice (once rejected pre-relogin, once applied), so money
+    can move at most once."""
+    respx.post(f"{BASE}/user/login").mock(
+        return_value=httpx.Response(200, json={"code": 20000, "token": "FRESH"})
+    )
+    route = respx.post(f"{BASE}/account/enterScore").mock(
+        side_effect=[
+            httpx.Response(200, json={"code": 52, "message": "no permission"}),
+            httpx.Response(200, json={"code": 20000, "message": "进分成功"}),
+        ]
+    )
+    async with httpx.AsyncClient(base_url=BASE) as http:
+        backend, store = _make_backend(http, fake_redis)
+        await _seed_session(store)
+        result = await backend.recharge(_ctx(account=_account("u01")), amount=50)
+    assert result.balance is None       # recharge success sentinel
+    assert route.call_count == 2
+
+
+@respx.mock
+async def test_recharge_persistent_52_after_relogin_raises_terminal_no_permission(fake_redis):
+    """A genuine, persistent permission error (fresh session still 52) must surface as
+    terminal `no_permission`, not be masked as transient."""
+    respx.post(f"{BASE}/user/login").mock(
+        return_value=httpx.Response(200, json={"code": 20000, "token": "FRESH"})
+    )
+    respx.post(f"{BASE}/account/enterScore").mock(
+        return_value=httpx.Response(200, json={"code": 52, "message": "no permission"})
+    )
+    async with httpx.AsyncClient(base_url=BASE) as http:
+        backend, store = _make_backend(http, fake_redis)
+        await _seed_session(store)
+        with pytest.raises(BackendError) as ei:
+            await backend.recharge(_ctx(account=_account("u01")), amount=50)
+    assert ei.value.reason == "ultrapanda:no_permission"
+    assert not isinstance(ei.value, TransientBackendError)
+
+
 # --- redeem ---
 
 @respx.mock
